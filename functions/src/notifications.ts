@@ -441,6 +441,9 @@ export const createNotificationFunctions = (db: Firestore) => {
         body: campaign.body,
         sound: "sound.wav",
         channelId: "reelx_general",
+        ...(campaign.imageUrl ? {
+          richContent: {image: campaign.imageUrl},
+        } : {}),
         data: {
           type: "admin_broadcast",
           campaignId,
