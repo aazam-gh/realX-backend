@@ -1,0 +1,16 @@
+{
+  "projects": {
+    "default": "reelx-backend",
+    "prod": "reelx-backend"
+  },
+  "targets": {
+    "reelx-backend": {
+      "storage": {
+        "production": [
+          "reelx-backend"
+        ]
+      }
+    }
+  },
+  "etags": {}
+}

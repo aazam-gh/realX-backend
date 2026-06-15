@@ -1,0 +1,6 @@
+{
+  "include": [
+    ".eslintrc.js",
+    "scripts/backfill-webp-images.js"
+  ]
+}

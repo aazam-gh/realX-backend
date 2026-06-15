@@ -1,0 +1,256 @@
+rules_version = '2';
+service cloud.firestore {
+match /databases/{database}/documents {
+
+// ─── Helper function to check for admin role (CUSTOM CLAIMS) ───────────
+function isAdmin() {
+  return request.auth != null && request.auth.token.admin == true;
+}
+
+function isValidOwnerProfileUpdate() {
+  return request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+    'firstName',
+    'lastName',
+    'dob',
+    'photoURL',
+    'updatedAt'
+  ])
+  && (!('firstName' in request.resource.data) || request.resource.data.firstName is string)
+  && (!('lastName' in request.resource.data) || request.resource.data.lastName is string)
+  && (!('dob' in request.resource.data) || request.resource.data.dob is string)
+  && (!('photoURL' in request.resource.data) || request.resource.data.photoURL is string)
+  && request.resource.data.updatedAt is timestamp;
+}
+
+function isValidSavedOffer() {
+  return request.resource.data.keys().hasOnly([
+      'type',
+      'vendorId',
+      'offerIndex',
+      'vendorName',
+      'vendorNameAr',
+      'vendorLogo',
+      'vendorCoverImage',
+      'titleEn',
+      'titleAr',
+      'descriptionEn',
+      'descriptionAr',
+      'discountType',
+      'discountValue',
+      'xcard',
+      'createdAt',
+      'updatedAt'
+    ])
+    && request.resource.data.keys().hasAll([
+      'type',
+      'vendorId',
+      'offerIndex',
+      'createdAt',
+      'updatedAt'
+    ])
+    && request.resource.data.type == 'offer'
+    && request.resource.data.vendorId is string
+    && request.resource.data.offerIndex is int
+    && request.resource.data.createdAt is timestamp
+    && request.resource.data.updatedAt is timestamp;
+}
+
+function isValidSavedMapPlace() {
+  return request.resource.data.keys().hasOnly([
+      'type',
+      'vendorId',
+      'locationId',
+      'vendorName',
+      'vendorNameAr',
+      'branchName',
+      'branchNameAr',
+      'phoneNumber',
+      'address',
+      'addressAr',
+      'latitude',
+      'longitude',
+      'mainCategory',
+      'createdAt',
+      'updatedAt'
+    ])
+    && request.resource.data.keys().hasAll([
+      'type',
+      'vendorId',
+      'locationId',
+      'latitude',
+      'longitude',
+      'createdAt',
+      'updatedAt'
+    ])
+    && request.resource.data.type == 'mapPlace'
+    && request.resource.data.vendorId is string
+    && request.resource.data.locationId is string
+    && request.resource.data.latitude is number
+    && request.resource.data.longitude is number
+    && request.resource.data.createdAt is timestamp
+    && request.resource.data.updatedAt is timestamp;
+}
+
+// ─── students collection ───────────────────────────────────────────────
+match /students/{userId} {
+
+  // Read: user can read own doc OR admin can read any
+  allow read: if request.auth != null
+    && (request.auth.uid == userId || isAdmin());
+
+  // Profiles are created by the completeSignup callable.
+  allow create: if isAdmin();
+
+  // Owners may edit profile presentation fields only.
+  allow update: if request.auth != null
+    && request.auth.uid == userId
+    && isValidOwnerProfileUpdate();
+
+  // Admin can write anything
+  allow write: if isAdmin();
+
+  match /savedItems/{savedItemId} {
+    allow read: if request.auth != null
+      && (request.auth.uid == userId || isAdmin());
+    allow create, update: if request.auth != null
+      && request.auth.uid == userId
+      && (isValidSavedOffer() || isValidSavedMapPlace());
+    allow delete: if request.auth != null
+      && (request.auth.uid == userId || isAdmin());
+  }
+
+  match /onlineRedemptionCounters/{counterId} {
+    allow read, write: if isAdmin();
+  }
+}
+
+// ─── creator_codes collection ──────────────────────────────────────────
+match /creator_codes/{code} {
+  allow read: if request.auth != null && resource.data.uid == request.auth.uid;
+  allow write: if false;
+}
+
+// ─── meta collection (cached vendor list, etc.) ────────────────────────
+match /meta/{docId} {
+  allow read: if isAdmin();
+  allow write: if isAdmin();
+}
+
+// ─── cms collection ───────────────────────────────────────────────────
+match /cms/{docId} {
+  allow read: if true;
+  allow write: if isAdmin();
+}
+
+// ─── categories collection ────────────────────────────────────────────
+match /categories/{catId} {
+  allow read: if request.auth != null;
+  allow write: if isAdmin();
+}
+
+// ─── offers collection ────────────────────────────────────────────────
+match /offers/{offerId} {
+  allow read: if request.auth != null;
+  allow write: if isAdmin();
+}
+
+// ─── events collection ────────────────────────────────────────────────
+match /events/{eventId} {
+  allow read: if true;
+  allow write: if isAdmin();
+}
+
+// ─── vendors collection ───────────────────────────────────────────────
+match /vendors/{vendorId} {
+  allow read: if true;
+  allow write: if isAdmin();
+}
+
+// ─── online vendor redemption config ─────────────────────────────────
+match /vendorOnlineRedemptionConfigs/{vendorId} {
+  allow read, write: if isAdmin();
+}
+
+// Server-only PIN hashes and redemption abuse controls.
+match /vendorRedemptionSecrets/{vendorId} {
+  allow read, write: if false;
+}
+
+// Plaintext PIN mirror for authenticated admins; writes remain server-only.
+match /vendor_pins/{vendorId} {
+  allow read: if isAdmin();
+  allow write: if false;
+}
+
+match /redemption_rate_limits/{rateLimitId} {
+  allow read, write: if false;
+}
+
+// ─── maps collection ──────────────────────────────────────────────────
+match /maps/{mapDocId} {
+  allow read: if request.auth != null;
+  allow write: if isAdmin();
+}
+
+// ─── map locations collection ────────────────────────────────────────
+match /mapLocations/{locationId} {
+  allow read: if request.auth != null;
+  allow write: if isAdmin();
+}
+
+// ─── rewards collection ───────────────────────────────────────────────
+match /rewards/{rewardId} {
+  allow read: if true;
+  allow write: if isAdmin();
+}
+
+// ─── transactions collection ──────────────────────────────────────────
+match /transactions/{transactionId} {
+  allow read: if request.auth != null
+    && (resource.data.userId == request.auth.uid
+      || resource.data.vendorId == request.auth.uid
+      || isAdmin());
+
+  allow create: if false;
+
+  allow write: if isAdmin();
+}
+
+// ─── notifications collection ─────────────────────────────────────────
+match /notifications/{notificationId} {
+  allow read: if request.auth != null;
+  allow write: if isAdmin();
+}
+
+// ─── pushTokens collection ────────────────────────────────────────────
+match /pushTokens/{tokenId} {
+  allow read: if isAdmin();
+  allow write: if false;
+}
+
+// ─── otps collection (admin SDK only) ──────────────────────────────────
+match /otps/{email} {
+  allow read, write: if false;
+}
+
+match /rate_limits/{rateLimitId} {
+  allow read, write: if false;
+}
+
+match /wakti_student_verification_requests/{requestId} {
+  allow read: if isAdmin();
+  allow write: if false;
+}
+
+// ─── verification_requests collection ────────────────────────────────
+match /verification_requests/{requestId} {
+  allow read: if isAdmin();
+  allow write: if false;
+}
+
+// ─── Default deny ─────────────────────────────────────────────────────
+match /{document=**} {
+  allow read, write: if false;
+}
+}
+}

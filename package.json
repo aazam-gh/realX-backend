@@ -1,0 +1,11 @@
+{
+  "name": "realx-backend",
+  "private": true,
+  "scripts": {
+    "check": "npm --prefix functions run lint && npm --prefix functions run build && npm --prefix functions test && npm run verify:functions && npm run verify:secrets",
+    "verify:functions": "node scripts/verify-function-manifest.mjs",
+    "verify:secrets": "node scripts/verify-no-plaintext-secrets.mjs",
+    "deploy:prod": "node scripts/deploy-production.mjs",
+    "dry-run:prod": "firebase deploy --dry-run --project reelx-backend"
+  }
+}
