@@ -12,6 +12,7 @@ const ALLOWED_STUDENT_EMAIL_DOMAINS = new Set([
   'student.ukm.qa',
   'miesppu.edu.qa',
   'abdn.ac.uk',
+  'ulster.ac.uk',
   'student.dbs.sch.qa',
   'asd.equ.qa',
   'qu.edu.qa',

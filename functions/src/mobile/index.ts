@@ -1426,7 +1426,7 @@ const VERIFICATION_RATE_LIMIT_MS = 60 * 60 * 1000; // 1 hour
 export const submitVerificationRequest = onCall(
   { enforceAppCheck: true },
   async (request: CallableRequest) => {
-    const { email, idFrontBase64, idBackBase64, role } = request.data || {};
+    const { email, idImageBase64, role } = request.data || {};
 
     const normalizedRole = ['student', 'creator'].includes(role) ? role : 'student';
 
@@ -1442,8 +1442,7 @@ export const submitVerificationRequest = onCall(
       throw new HttpsError('invalid-argument', 'Please use the regular signup with your school email');
     }
 
-    const frontImage = parseVerificationImage(idFrontBase64, 'Front');
-    const backImage = parseVerificationImage(idBackBase64, 'Back');
+    const idImage = parseVerificationImage(idImageBase64, 'ID');
 
     const otpDoc = await getOtpRef(normalizedEmail).get();
     const otpData = otpDoc.data() || {};
@@ -1491,15 +1490,11 @@ export const submitVerificationRequest = onCall(
     // Upload images to Firebase Storage
     const bucket = getStorageBucket();
     const uploadId = hashDocId(statusToken).slice(0, 16);
-    const frontPath = `verification_requests/${requestId}/${uploadId}-front.${frontImage.extension}`;
-    const backPath = `verification_requests/${requestId}/${uploadId}-back.${backImage.extension}`;
-    const uploadedFiles = [bucket.file(frontPath), bucket.file(backPath)];
+    const idImagePath = `verification_requests/${requestId}/${uploadId}.${idImage.extension}`;
+    const uploadedFile = bucket.file(idImagePath);
 
     try {
-      await Promise.all([
-        uploadedFiles[0].save(frontImage.buffer, { metadata: { contentType: frontImage.contentType } }),
-        uploadedFiles[1].save(backImage.buffer, { metadata: { contentType: backImage.contentType } }),
-      ]);
+      await uploadedFile.save(idImage.buffer, { metadata: { contentType: idImage.contentType } });
 
       await db.runTransaction(async (tx) => {
         const existingRequest = await tx.get(requestRef);
@@ -1519,8 +1514,7 @@ export const submitVerificationRequest = onCall(
           status: 'pending',
           role: normalizedRole,
           statusTokenHash: hashToken(statusToken),
-          idFrontPath: frontPath,
-          idBackPath: backPath,
+          idImagePath,
           submittedAt: admin.firestore.FieldValue.serverTimestamp(),
           expiresAt: admin.firestore.Timestamp.fromMillis(Date.now() + 30 * 24 * 60 * 60 * 1000),
           reviewedAt: null,
@@ -1530,7 +1524,7 @@ export const submitVerificationRequest = onCall(
         });
       });
     } catch (error) {
-      await Promise.allSettled(uploadedFiles.map((file) => file.delete({ ignoreNotFound: true })));
+      await uploadedFile.delete({ ignoreNotFound: true }).catch(() => undefined);
       throw error;
     }
 
@@ -1599,23 +1593,16 @@ export const listPendingVerificationRequests = onCall(
       const data = doc.data();
 
       // Generate signed download URLs (valid for 1 hour)
-      const [[frontUrl], [backUrl]] = await Promise.all([
-        bucket.file(data.idFrontPath).getSignedUrl({
-          action: 'read',
-          expires: Date.now() + 60 * 60 * 1000,
-        }),
-        bucket.file(data.idBackPath).getSignedUrl({
-          action: 'read',
-          expires: Date.now() + 60 * 60 * 1000,
-        }),
-      ]);
+      const [idImageUrl] = await bucket.file(data.idImagePath).getSignedUrl({
+        action: 'read',
+        expires: Date.now() + 60 * 60 * 1000,
+      });
 
       return {
         requestId: doc.id,
         email: data.email,
         submittedAt: data.submittedAt,
-        frontImageUrl: frontUrl,
-        backImageUrl: backUrl,
+        idImageUrl,
       };
     }));
 

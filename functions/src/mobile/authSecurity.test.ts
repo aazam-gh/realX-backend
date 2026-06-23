@@ -11,6 +11,7 @@ import {
 test('student email policy allows Qatar and configured school domains', () => {
   assert.equal(isAllowedStudentEmail('student@example.qa'), true);
   assert.equal(isAllowedStudentEmail('student@abdn.ac.uk'), true);
+  assert.equal(isAllowedStudentEmail('student@ulster.ac.uk'), true);
   assert.equal(isAllowedStudentEmail('student@example.com'), false);
 });
 
