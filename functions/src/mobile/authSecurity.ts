@@ -14,11 +14,13 @@ const ALLOWED_STUDENT_EMAIL_DOMAINS = new Set([
   'abdn.ac.uk',
   'ulster.ac.uk',
   'student.dbs.sch.qa',
+  'student.dbsrawdat.com',
   'asd.equ.qa',
   'qu.edu.qa',
   'oryx.edu.qa',
   'lu.edu.qa',
   'tamu.edu',
+  'smail.astate.edu',
   'hbku.edu.qa',
   'andrew.cmu.edu',
 ]);
