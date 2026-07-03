@@ -14,6 +14,8 @@
   "deleteVerificationRequest",
   "getOnlineRedemptionPreview",
   "listAdminBigQueryTransactions",
+  "listAdminBigQueryStudents",
+  "listAdminBigQueryVendors",
   "listPendingVerificationRequests",
   "onVendorWrite",
   "processNotificationBroadcast",
