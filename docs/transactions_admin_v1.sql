@@ -33,4 +33,5 @@ SELECT
   JSON_VALUE(data, '$.vendorId') AS vendor_id,
   SAFE_CAST(JSON_VALUE(data, '$.redemptionCardAmount') AS FLOAT64) AS redemption_card_amount,
   SAFE_CAST(JSON_VALUE(data, '$.remainingAmount') AS FLOAT64) AS remaining_amount
-FROM `reelx-backend.firestore_export.transactions_raw_latest`;
+FROM `reelx-backend.firestore_export.transactions_raw_latest`
+WHERE COALESCE(JSON_VALUE(data, '$.type'), 'transaction') != 'online_redemption';

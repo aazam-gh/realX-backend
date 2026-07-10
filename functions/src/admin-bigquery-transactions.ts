@@ -197,7 +197,7 @@ export async function listAdminBigQueryTransactionsHandler(
   const types: Record<string, string> = {
     limit: "INT64",
   };
-  const where = [];
+  const where = ["type != 'online_redemption'"];
 
   if (vendorName) {
     where.push("vendor_name = @vendorName");

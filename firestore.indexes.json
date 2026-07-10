@@ -510,6 +510,12 @@
       "indexes": []
     },
     {
+      "collectionGroup": "onlineVendorClickRequests",
+      "fieldPath": "expiresAt",
+      "ttl": true,
+      "indexes": []
+    },
+    {
       "collectionGroup": "verification_requests",
       "fieldPath": "expiresAt",
       "ttl": true,
