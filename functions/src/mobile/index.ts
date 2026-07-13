@@ -9,6 +9,7 @@ import '../global-options.js';
 import {
   createHash,
   randomInt,
+  randomUUID,
 } from 'crypto';
 import {
   hashPin,
@@ -38,6 +39,11 @@ import {
   isValidSignupGender,
   isValidSignupRole,
 } from './authSecurity';
+import {
+  normalizeHttpsPurchaseUrl,
+  normalizeOnlineClickRequestId,
+  shouldTrackOnlineClick,
+} from './onlineVendorSecurity';
 
 if (admin.apps.length === 0) admin.initializeApp();
 
@@ -119,49 +125,175 @@ const getQatarDateKey = () => {
   return `${valueFor('year')}-${valueFor('month')}-${valueFor('day')}`;
 };
 
-const getOnlineRedemptionConfig = async (vendorId: string) => {
-  const [vendorDoc, configDoc] = await Promise.all([
+const ONLINE_CLICK_REQUEST_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const LEGACY_UNLIMITED_REMAINING = 2147483647;
+
+const requireOnlineVendorId = (data: unknown) => {
+  const vendorId = typeof (data as { vendorId?: unknown })?.vendorId === 'string' ?
+    (data as { vendorId: string }).vendorId.trim() : '';
+  if (!vendorId || vendorId.length > 200 || vendorId.includes('/')) {
+    throw new HttpsError('invalid-argument', 'A valid vendor ID is required');
+  }
+  return vendorId;
+};
+
+const requireOnlineClickRequestId = (data: unknown) => {
+  const requestId = normalizeOnlineClickRequestId((data as { requestId?: unknown })?.requestId);
+  if (!requestId) {
+    throw new HttpsError('invalid-argument', 'A valid request ID is required');
+  }
+  return requestId;
+};
+
+const parseHttpsPurchaseUrl = (value: unknown) => {
+  const purchaseUrl = normalizeHttpsPurchaseUrl(value);
+  if (!purchaseUrl) {
+    throw new HttpsError('failed-precondition', 'Online vendor purchase URL must be a valid HTTPS URL');
+  }
+  return purchaseUrl;
+};
+
+const assertOnlineVendorEligibility = (
+  userExists: boolean,
+  userData: admin.firestore.DocumentData,
+  vendorExists: boolean,
+  vendorData: admin.firestore.DocumentData,
+  configExists: boolean,
+  configData: admin.firestore.DocumentData
+) => {
+  if (!userExists) throw new HttpsError('not-found', 'Student profile not found');
+  if (userData.redemptionDisabled === true || userData.accountType === 'browse_only') {
+    throw new HttpsError('permission-denied', 'This account cannot access online vendor offers');
+  }
+  if (!vendorExists) throw new HttpsError('not-found', 'Vendor not found');
+  if (vendorData.vendorType !== 'online') {
+    throw new HttpsError('failed-precondition', 'This vendor is not an online vendor');
+  }
+  if (vendorData.isActive === false || vendorData.status === 'Inactive') {
+    throw new HttpsError('failed-precondition', 'This online vendor is disabled');
+  }
+  if (!configExists || configData.enabled !== true) {
+    throw new HttpsError('failed-precondition', 'Online vendor access is not enabled');
+  }
+
+  const discountCode = typeof configData.discountCode === 'string' ? configData.discountCode.trim() : '';
+  if (!discountCode) {
+    throw new HttpsError('failed-precondition', 'Online vendor discount code is not configured');
+  }
+
+  return {
+    discountCode,
+    purchaseUrl: parseHttpsPurchaseUrl(configData.purchaseUrl),
+  };
+};
+
+const getEligibleOnlineVendor = async (uid: string, vendorId: string) => {
+  const [userDoc, vendorDoc, configDoc] = await Promise.all([
+    db.collection('students').doc(uid).get(),
     db.collection('vendors').doc(vendorId).get(),
     db.collection('vendorOnlineRedemptionConfigs').doc(vendorId).get(),
   ]);
 
-  if (!vendorDoc.exists) {
-    throw new HttpsError('not-found', 'Vendor not found');
-  }
-
+  const userData = userDoc.data() || {};
   const vendorData = vendorDoc.data() || {};
-  if (vendorData.vendorType !== 'online') {
-    throw new HttpsError('failed-precondition', 'This vendor is not available for online redemption');
-  }
-
-  if (!configDoc.exists) {
-    throw new HttpsError('failed-precondition', 'Online redemption is not configured for this vendor');
-  }
-
   const configData = configDoc.data() || {};
-  const discountCode = typeof configData.discountCode === 'string' ? configData.discountCode.trim() : '';
-  const purchaseUrl = typeof configData.purchaseUrl === 'string' ? configData.purchaseUrl.trim() : '';
-  const dailyLimitPerUser = Number(configData.dailyLimitPerUser || 0);
-
-  const configIsAvailable =
-    configData.enabled === true &&
-    !!discountCode &&
-    !!purchaseUrl &&
-    Number.isFinite(dailyLimitPerUser) &&
-    dailyLimitPerUser >= 1;
-
-  if (!configIsAvailable) {
-    throw new HttpsError('failed-precondition', 'Online redemption is not available for this vendor');
-  }
+  const offer = assertOnlineVendorEligibility(
+    userDoc.exists,
+    userData,
+    vendorDoc.exists,
+    vendorData,
+    configDoc.exists,
+    configData
+  );
 
   return {
     vendorData,
-    configData: {
-      discountCode,
-      purchaseUrl,
-      dailyLimitPerUser: Math.floor(dailyLimitPerUser),
-    },
+    ...offer,
   };
+};
+
+const recordOnlineVendorClick = async (uid: string, vendorId: string, requestId: string) => {
+  const userRef = db.collection('students').doc(uid);
+  const vendorRef = db.collection('vendors').doc(vendorId);
+  const configRef = db.collection('vendorOnlineRedemptionConfigs').doc(vendorId);
+  const dateKey = getQatarDateKey();
+  const analyticsRef = db.collection('onlineVendorAnalytics').doc(vendorId);
+  const dayRef = analyticsRef.collection('days').doc(dateKey);
+  const analyticsUserRef = analyticsRef.collection('users').doc(uid);
+  const throttleRef = analyticsRef.collection('throttles').doc(`${uid}_${dateKey}`);
+  const requestRef = db.collection('onlineVendorClickRequests').doc(
+    hashDocId(`${uid}:${vendorId}:${requestId}`)
+  );
+
+  return db.runTransaction(async (tx) => {
+    const [userDoc, vendorDoc, configDoc, requestDoc, analyticsUserDoc, throttleDoc] = await Promise.all([
+      tx.get(userRef),
+      tx.get(vendorRef),
+      tx.get(configRef),
+      tx.get(requestRef),
+      tx.get(analyticsUserRef),
+      tx.get(throttleRef),
+    ]);
+
+    const userData = userDoc.data() || {};
+    const vendorData = vendorDoc.data() || {};
+    const configData = configDoc.data() || {};
+    const offer = assertOnlineVendorEligibility(
+      userDoc.exists,
+      userData,
+      vendorDoc.exists,
+      vendorData,
+      configDoc.exists,
+      configData
+    );
+
+    if (requestDoc.exists) {
+      const original = requestDoc.data() || {};
+      return {
+        purchaseUrl: typeof original.purchaseUrl === 'string' ? original.purchaseUrl : offer.purchaseUrl,
+        tracked: original.tracked === true,
+      };
+    }
+
+    const now = admin.firestore.Timestamp.now();
+    const tracked = shouldTrackOnlineClick(throttleDoc.data()?.count || 0);
+
+    tx.create(requestRef, {
+      uid,
+      vendorId,
+      purchaseUrl: offer.purchaseUrl,
+      tracked,
+      createdAt: now,
+      expiresAt: admin.firestore.Timestamp.fromMillis(now.toMillis() + ONLINE_CLICK_REQUEST_TTL_MS),
+    });
+
+    if (tracked) {
+      tx.set(analyticsRef, {
+        vendorId,
+        vendorName: typeof vendorData.name === 'string' ? vendorData.name : '',
+        updatedAt: now,
+      }, { merge: true });
+      tx.set(dayRef, {
+        date: dateKey,
+        clicks: admin.firestore.FieldValue.increment(1),
+        updatedAt: now,
+      }, { merge: true });
+      tx.set(analyticsUserRef, {
+        uid,
+        firstClick: analyticsUserDoc.exists ? analyticsUserDoc.data()?.firstClick || now : now,
+        latestClick: now,
+        count: admin.firestore.FieldValue.increment(1),
+      }, { merge: true });
+      tx.set(throttleRef, {
+        uid,
+        date: dateKey,
+        count: admin.firestore.FieldValue.increment(1),
+        updatedAt: now,
+      }, { merge: true });
+    }
+
+    return { purchaseUrl: offer.purchaseUrl, tracked };
+  });
 };
 
 
@@ -628,35 +760,46 @@ export const redeemOffer = onCall(
   }
 );
 
-export const getOnlineRedemptionPreview = onCall(
+export const getOnlineVendorOffer = onCall(
   { enforceAppCheck: true },
   async (request: CallableRequest) => {
     if (!request.auth) {
       throw new HttpsError('unauthenticated', 'Login required');
     }
 
-    const vendorId = typeof request.data?.vendorId === 'string' ? request.data.vendorId : '';
-    if (!vendorId) {
-      throw new HttpsError('invalid-argument', 'Vendor ID is required');
+    const vendorId = requireOnlineVendorId(request.data);
+    const { discountCode } = await getEligibleOnlineVendor(request.auth.uid, vendorId);
+
+    return { discountCode };
+  }
+);
+
+export const recordOnlineVendorOutboundClick = onCall(
+  { enforceAppCheck: true },
+  async (request: CallableRequest) => {
+    if (!request.auth) {
+      throw new HttpsError('unauthenticated', 'Login required');
     }
 
-    const { configData } = await getOnlineRedemptionConfig(vendorId);
-    const dateKey = getQatarDateKey();
-    const counterId = `${vendorId}_${dateKey}`;
-    const counterDoc = await db
-      .collection('students')
-      .doc(request.auth.uid)
-      .collection('onlineRedemptionCounters')
-      .doc(counterId)
-      .get();
+    const vendorId = requireOnlineVendorId(request.data);
+    const requestId = requireOnlineClickRequestId(request.data);
+    return recordOnlineVendorClick(request.auth.uid, vendorId, requestId);
+  }
+);
 
-    const usedToday = Number(counterDoc.data()?.count || 0);
-
+// Temporary wrappers for installed builds. Remove after the mobile version gate
+// excludes builds that still call the legacy online-redemption functions.
+export const getOnlineRedemptionPreview = onCall(
+  { enforceAppCheck: true },
+  async (request: CallableRequest) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Login required');
+    const vendorId = requireOnlineVendorId(request.data);
+    const { discountCode } = await getEligibleOnlineVendor(request.auth.uid, vendorId);
     return {
-      discountCode: configData.discountCode,
-      dailyLimitPerUser: configData.dailyLimitPerUser,
-      remainingToday: Math.max(0, configData.dailyLimitPerUser - usedToday),
-      dateKey,
+      discountCode,
+      dailyLimitPerUser: LEGACY_UNLIMITED_REMAINING,
+      remainingToday: LEGACY_UNLIMITED_REMAINING,
+      dateKey: getQatarDateKey(),
     };
   }
 );
@@ -664,99 +807,15 @@ export const getOnlineRedemptionPreview = onCall(
 export const redeemOnlineVendor = onCall(
   { enforceAppCheck: true },
   async (request: CallableRequest) => {
-    if (!request.auth) {
-      throw new HttpsError('unauthenticated', 'Login required');
-    }
-
-    const uid = request.auth.uid;
-    const vendorId = typeof request.data?.vendorId === 'string' ? request.data.vendorId : '';
-    if (!vendorId) {
-      throw new HttpsError('invalid-argument', 'Vendor ID is required');
-    }
-
-    const vendorRef = db.collection('vendors').doc(vendorId);
-    const configRef = db.collection('vendorOnlineRedemptionConfigs').doc(vendorId);
-    const dateKey = getQatarDateKey();
-    const counterRef = db
-      .collection('students')
-      .doc(uid)
-      .collection('onlineRedemptionCounters')
-      .doc(`${vendorId}_${dateKey}`);
-    const transactionRef = db.collection('transactions').doc();
-
-    return db.runTransaction(async (tx) => {
-      const [userDoc, vendorDoc, configDoc, counterDoc] = await Promise.all([
-        tx.get(db.collection('students').doc(uid)),
-        tx.get(vendorRef),
-        tx.get(configRef),
-        tx.get(counterRef),
-      ]);
-
-      if (!userDoc.exists) throw new HttpsError('not-found', 'User not found');
-      if (!vendorDoc.exists) throw new HttpsError('not-found', 'Vendor not found');
-
-      const vendorData = vendorDoc.data() || {};
-      if (vendorData.vendorType !== 'online') {
-        throw new HttpsError('failed-precondition', 'This vendor is not available for online redemption');
-      }
-
-      if (!configDoc.exists) {
-        throw new HttpsError('failed-precondition', 'Online redemption is not configured for this vendor');
-      }
-
-      const configData = configDoc.data() || {};
-      const discountCode = typeof configData.discountCode === 'string' ? configData.discountCode.trim() : '';
-      const purchaseUrl = typeof configData.purchaseUrl === 'string' ? configData.purchaseUrl.trim() : '';
-      const dailyLimitPerUser = Math.floor(Number(configData.dailyLimitPerUser || 0));
-
-      const configIsAvailable =
-        configData.enabled === true &&
-        !!discountCode &&
-        !!purchaseUrl &&
-        Number.isFinite(dailyLimitPerUser) &&
-        dailyLimitPerUser >= 1;
-
-      if (!configIsAvailable) {
-        throw new HttpsError('failed-precondition', 'Online redemption is not available for this vendor');
-      }
-
-      const usedToday = Number(counterDoc.data()?.count || 0);
-      if (usedToday >= dailyLimitPerUser) {
-        throw new HttpsError('resource-exhausted', 'Daily online redemption limit reached');
-      }
-
-      tx.set(transactionRef, {
-        type: 'online_redemption',
-        status: 'completed',
-        userId: uid,
-        vendorId,
-        vendorName: vendorData.name || '',
-        vendorNameAr: vendorData.nameAr || null,
-        discountCode,
-        purchaseUrl,
-        onlineRedemptionDateKey: dateKey,
-        totalAmount: 0,
-        discountAmount: 0,
-        finalAmount: 0,
-        cashbackAmount: 0,
-        creatorCashbackAmount: 0,
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-
-      tx.set(counterRef, {
-        vendorId,
-        dateKey,
-        count: admin.firestore.FieldValue.increment(1),
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      }, { merge: true });
-
-      return {
-        transactionId: transactionRef.id,
-        purchaseUrl,
-        discountCode,
-        remainingToday: Math.max(0, dailyLimitPerUser - usedToday - 1),
-      };
-    });
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Login required');
+    const vendorId = requireOnlineVendorId(request.data);
+    const click = await recordOnlineVendorClick(request.auth.uid, vendorId, randomUUID());
+    const { discountCode } = await getEligibleOnlineVendor(request.auth.uid, vendorId);
+    return {
+      ...click,
+      discountCode,
+      remainingToday: LEGACY_UNLIMITED_REMAINING,
+    };
   }
 );
 

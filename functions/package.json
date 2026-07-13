@@ -8,7 +8,8 @@
     "backfill:webp": "node scripts/backfill-webp-images.js",
     "shell": "npm run build && firebase functions:shell",
     "start": "npm run shell",
-    "logs": "firebase functions:log"
+    "logs": "firebase functions:log",
+    "cleanup:online-vendors": "node scripts/cleanup-online-vendor-legacy.js"
   },
   "engines": {
     "node": "24"

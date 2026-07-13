@@ -171,6 +171,23 @@ match /vendorOnlineRedemptionConfigs/{vendorId} {
   allow read, write: if isAdmin();
 }
 
+// Qualified outbound-click analytics. Admins may inspect aggregate documents;
+// only trusted backend code may create or update analytics.
+match /onlineVendorAnalytics/{vendorId} {
+  allow read: if isAdmin();
+  allow write: if false;
+
+  match /{subcollection}/{documentId} {
+    allow read: if isAdmin();
+    allow write: if false;
+  }
+}
+
+// Seven-day idempotency records and abuse controls are server-only.
+match /onlineVendorClickRequests/{requestId} {
+  allow read, write: if false;
+}
+
 // Server-only PIN hashes and redemption abuse controls.
 match /vendorRedemptionSecrets/{vendorId} {
   allow read, write: if false;
