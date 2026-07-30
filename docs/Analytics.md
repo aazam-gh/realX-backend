@@ -277,6 +277,14 @@ The browser never receives BigQuery credentials or direct BigQuery access.
 The callable requires an authenticated Firebase user with the `admin: true`
 custom claim.
 
+The main `/admin/dashboard` route uses the parallel admin-only
+`getAdminBigQueryDashboard` callable. It executes one bounded BigQuery job for
+all dashboard panels and does not issue browser-side Firestore reads or
+aggregation queries. Because only the transaction collection is exported, its
+master-data cards intentionally report transacting students, transacting
+vendors, offer redemptions, and total transactions rather than all registered
+students, all active vendors, or configured offers.
+
 The callable runs as the dedicated
 `admin-bigquery-transactions@reelx-backend.iam.gserviceaccount.com` service
 account. Grant it only:
@@ -289,13 +297,25 @@ Do not grant BigQuery roles to admin browser users.
 ## Cost controls and logging
 
 The callable uses fixed SQL, allowlisted sort columns, parameterized values,
-deterministic cursor pagination, and `LIMIT + 1`. It defaults to a 256 MiB
-`maximumBytesBilled` limit per query. Override it with the
-`ADMIN_BIGQUERY_MAX_BYTES_BILLED` Function environment variable when needed.
+deterministic cursor pagination, and `LIMIT + 1`. Every query has a
+non-bypassable 64 MiB `maximumBytesBilled` ceiling. The
+`ADMIN_BIGQUERY_MAX_BYTES_BILLED` Function environment variable may lower the
+limit, but cannot raise it above 64 MiB.
 
 Each query logs requesting admin UID, filters, sorting, cursor presence,
 duration, result count, bytes processed, bytes billed, cache status, and
 whether a failure was caused by the byte budget.
+
+The dashboard query uses the same hard 64 MiB ceiling. Set
+`ADMIN_DASHBOARD_BIGQUERY_MAX_BYTES_BILLED` to lower the dashboard limit
+independently, or `ADMIN_BIGQUERY_MAX_BYTES_BILLED` to lower the shared
+fallback.
+
+The production project also has a 25 GiB `QueryUsagePerDay` custom quota. This
+keeps the theoretical 31-day maximum at 775 GiB, below BigQuery's 1 TiB monthly
+analysis free tier with headroom for quota approximation. The quota covers all
+on-demand queries billed to the project, not only these callables. BigQuery
+storage must be monitored separately against its 10 GiB monthly free tier.
 
 ## Evaluation workflow
 

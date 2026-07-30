@@ -14,8 +14,14 @@ import sharp from "sharp";
 import {
   listAdminBigQueryTransactionsHandler,
 } from "./admin-bigquery-transactions.js";
+import {
+  getAdminBigQueryDashboardHandler,
+} from "./admin-bigquery-dashboard.js";
+import {createAdminTransactionFunctions} from "./admin-transactions.js";
 import "./global-options.js";
+import {createHoldingFunctions} from "./holding.js";
 import {createNotificationFunctions} from "./notifications.js";
+import {createOpportunityFunctions} from "./opportunities.js";
 
 // Init Admin SDK once; the backend also imports mobile-owned functions.
 if (getApps().length === 0) initializeApp();
@@ -44,12 +50,42 @@ const {
   sendNotification,
   unregisterPushToken,
 } = createNotificationFunctions(getFirestore());
+const {
+  getOpportunityAction,
+} = createOpportunityFunctions(getFirestore());
+const {
+  deleteTransaction,
+} = createAdminTransactionFunctions(getFirestore());
+const {
+  createHoldingGroup,
+  createHoldingGroupUser,
+  deleteHoldingGroupUser,
+  disableHoldingGroupUser,
+  getHoldingDashboard,
+  getHoldingTransaction,
+  getMyHoldingProfile,
+  listHoldingGroups,
+  listHoldingTransactions,
+  updateHoldingGroup,
+} = createHoldingFunctions(getFirestore(), getAuth());
 export {
+  createHoldingGroup,
+  createHoldingGroupUser,
+  deleteHoldingGroupUser,
+  deleteTransaction,
+  disableHoldingGroupUser,
+  getOpportunityAction,
+  getHoldingDashboard,
+  getHoldingTransaction,
+  getMyHoldingProfile,
+  listHoldingGroups,
+  listHoldingTransactions,
   processNotificationBroadcast,
   processNotificationReceipts,
   registerPushToken,
   sendNotification,
   unregisterPushToken,
+  updateHoldingGroup,
 };
 
 export const listAdminBigQueryTransactions = onCall(
@@ -61,6 +97,18 @@ export const listAdminBigQueryTransactions = onCall(
       "admin-bigquery-transactions@reelx-backend.iam.gserviceaccount.com",
   },
   listAdminBigQueryTransactionsHandler,
+);
+
+export const getAdminBigQueryDashboard = onCall(
+  {
+    region: REGION,
+    cors: true,
+    timeoutSeconds: 60,
+    memory: "512MiB",
+    serviceAccount:
+      "admin-bigquery-transactions@reelx-backend.iam.gserviceaccount.com",
+  },
+  getAdminBigQueryDashboardHandler,
 );
 
 /**
@@ -358,7 +406,7 @@ function shouldIndexMapVendor(data: FirebaseFirestore.DocumentData) {
   const status = typeof data.status === "string" ? data.status : null;
 
   if (vendorType === "online") return false;
-  if (status && status.toLowerCase() === "inactive") return false;
+  if (status && status.toLowerCase() !== "active") return false;
 
   return true;
 }
@@ -407,7 +455,7 @@ function buildMapLocationDocs(
       vendorType: typeof data.vendorType === "string" ? data.vendorType : null,
       status: typeof data.status === "string" ? data.status : null,
       isActive: typeof data.status === "string" ?
-        data.status.toLowerCase() !== "inactive" :
+        data.status.toLowerCase() === "active" :
         true,
       xcard: entry.xcard,
       offerTypes: entry.offerTypes,
@@ -614,7 +662,7 @@ export const createVendorUser = onCall(
       throw new HttpsError("permission-denied", "Admin access required");
     }
 
-    const {name, email, password} = data;
+    const {name, email, password, isDraft = false} = data;
 
     // 3️⃣ Validate input
     if (!name || !email || !password) {
@@ -639,7 +687,8 @@ export const createVendorUser = onCall(
     await db.collection("vendors").doc(user.uid).set({
       name,
       email,
-      status: "Active",
+      status: isDraft === true ? "Draft" : "Active",
+      isActive: isDraft !== true,
       createdAt: new Date(),
     });
 
@@ -1076,7 +1125,7 @@ export const onVendorWrite = onDocumentWritten(
 
     const data = event.data.after.data();
     if (!data) return;
-    const entry = buildMapEntry(data);
+    const entry = shouldIndexMapVendor(data) ? buildMapEntry(data) : null;
     const locationDocs = buildMapLocationDocs(vendorId, data);
     await replaceVendorMapLocationDocs(vendorId, locationDocs);
 
@@ -1146,7 +1195,9 @@ export const rebuildLocationsCache = onCall(
     }
 
     for (const doc of snapshot.docs) {
-      const entry = buildMapEntry(doc.data());
+      const entry = shouldIndexMapVendor(doc.data()) ?
+        buildMapEntry(doc.data()) :
+        null;
       if (entry) {
         vendors[doc.id] = entry;
         count++;

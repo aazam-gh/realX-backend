@@ -1,6 +1,7 @@
 import {BigQuery, Job} from "@google-cloud/bigquery";
 import {HttpsError, CallableRequest} from "firebase-functions/v2/https";
 import * as logger from "firebase-functions/logger";
+import {resolveMaximumBytesBilled} from "./bigquery-cost-controls.js";
 
 /* eslint-disable require-jsdoc, max-len */
 
@@ -9,8 +10,6 @@ const LOCATION = "US";
 const VIEW = "`reelx-backend.firestore_export.transactions_admin_v1`";
 const DEFAULT_PAGE_SIZE = 10;
 const MAX_PAGE_SIZE = 100;
-const DEFAULT_MAXIMUM_BYTES_BILLED = 256 * 1024 * 1024;
-
 const bigquery = new BigQuery({projectId: PROJECT_ID});
 
 const SORTS = {
@@ -172,10 +171,9 @@ function getQueryStats(job: Job) {
 }
 
 function getMaximumBytesBilled() {
-  const configured = Number(process.env.ADMIN_BIGQUERY_MAX_BYTES_BILLED);
-  return Number.isSafeInteger(configured) && configured > 0 ?
-    configured :
-    DEFAULT_MAXIMUM_BYTES_BILLED;
+  return resolveMaximumBytesBilled(
+    process.env.ADMIN_BIGQUERY_MAX_BYTES_BILLED,
+  );
 }
 
 export async function listAdminBigQueryTransactionsHandler(
