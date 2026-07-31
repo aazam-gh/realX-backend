@@ -44,8 +44,14 @@ still inside its five-minute validity window.
 
 Create a new provider key, store it with
 `firebase functions:secrets:set RESEND_API_KEY --project reelx-backend`, deploy
-`sendOtp` and `approveVerificationRequest`, verify both email flows, and then
-revoke the old provider key.
+`sendOtp`, `approveVerificationRequest`, and `rejectVerificationRequest`,
+verify the OTP, approval, and rejection emails, and then revoke the old
+provider key.
+
+The manual-verification release also requires `verifyOtp`, `completeSignup`,
+`submitVerificationRequest`, `checkVerificationStatus`,
+`cancelVerificationRequest`, and `cleanupExpiredVerificationRequests` to be
+deployed from this canonical backend together.
 
 Never add API keys to `functions/.env*`. Firebase environment files are only
 for non-secret configuration.
