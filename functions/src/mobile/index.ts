@@ -76,6 +76,15 @@ const getStorageBucket = () => {
 
   return admin.storage().bucket(bucketName);
 };
+const deleteVerificationImage = async (path: string, requestId: string) => {
+  try {
+    await getStorageBucket().file(path).delete({ ignoreNotFound: true });
+    return true;
+  } catch (error) {
+    console.error('Unable to delete verification image', { requestId, error });
+    return false;
+  }
+};
 const REVIEW_EMAIL = (process.env.APPLE_REVIEW_EMAIL || 'apple-review@realx.qa').toLowerCase().trim();
 const getOtpHmacSecret = () => OTP_HMAC_SECRET.value();
 /**
@@ -1342,6 +1351,8 @@ export const verifyOtp = onCall(
         verified: true,
         verifiedAt: now,
         updatedAt: now,
+        code: admin.firestore.FieldValue.delete(),
+        codeHash: admin.firestore.FieldValue.delete(),
       });
 
       return { success: true };
@@ -1524,7 +1535,7 @@ export const completeSignup = onCall(
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       }, { merge: true });
       if (typeof idImagePath === 'string' && idImagePath) {
-        await getStorageBucket().file(idImagePath).delete({ ignoreNotFound: true });
+        await deleteVerificationImage(idImagePath, verificationDoc.id);
       }
     }
 
@@ -1702,14 +1713,14 @@ export const cancelVerificationRequest = onCall(
     });
 
     if (typeof requestData.idImagePath === 'string' && requestData.idImagePath) {
-      await getStorageBucket().file(requestData.idImagePath).delete({ ignoreNotFound: true });
+      await deleteVerificationImage(requestData.idImagePath, requestRef.id);
     }
     return { success: true };
   }
 );
 
 export const cleanupExpiredVerificationRequests = onSchedule(
-  { schedule: 'every day 03:00', timeZone: 'Asia/Qatar' },
+  { schedule: 'every day 03:00', timeZone: 'Asia/Qatar', timeoutSeconds: 300 },
   async () => {
     const now = admin.firestore.Timestamp.now();
     const expired = await db
@@ -1718,39 +1729,44 @@ export const cleanupExpiredVerificationRequests = onSchedule(
       .limit(200)
       .get();
 
-    const batch = db.batch();
     let cleaned = 0;
+    const concurrency = 20;
 
-    for (const requestDoc of expired.docs) {
-      const data = requestDoc.data();
-      if (data.status === 'approving') continue;
+    for (let offset = 0; offset < expired.docs.length; offset += concurrency) {
+      const chunk = expired.docs.slice(offset, offset + concurrency);
+      await Promise.all(chunk.map(async (requestDoc) => {
+        const data = await db.runTransaction(async (tx) => {
+          const latest = await tx.get(requestDoc.ref);
+          const latestData = latest.data() || {};
+          const expiresAt = latestData.expiresAt?.toMillis?.() || 0;
+          if (!latest.exists || expiresAt > now.toMillis() || latestData.status === 'approving') {
+            return null;
+          }
+          if (latestData.status === 'pending') {
+            tx.update(requestDoc.ref, {
+              status: 'expired',
+              expiredAt: admin.firestore.FieldValue.serverTimestamp(),
+              updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+            });
+          }
+          return latestData;
+        });
+        if (!data) return;
 
-      if (typeof data.idImagePath === 'string' && data.idImagePath) {
-        try {
-          await getStorageBucket().file(data.idImagePath).delete({ ignoreNotFound: true });
-        } catch (error) {
-          console.error('Unable to delete expired verification image', {
-            requestId: requestDoc.id,
-            error,
-          });
-          continue;
+        if (typeof data.idImagePath === 'string' && data.idImagePath) {
+          const deleted = await deleteVerificationImage(data.idImagePath, requestDoc.id);
+          if (!deleted) return;
         }
-      }
 
-      const updates: Record<string, unknown> = {
-        expiresAt: admin.firestore.FieldValue.delete(),
-        idImagePath: admin.firestore.FieldValue.delete(),
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      };
-      if (data.status === 'pending') {
-        updates.status = 'expired';
-        updates.expiredAt = admin.firestore.FieldValue.serverTimestamp();
-      }
-      batch.update(requestDoc.ref, updates);
-      cleaned += 1;
+        await requestDoc.ref.update({
+          expiresAt: admin.firestore.FieldValue.delete(),
+          idImagePath: admin.firestore.FieldValue.delete(),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+        cleaned += 1;
+      }));
     }
 
-    if (cleaned > 0) await batch.commit();
     console.info('Expired verification cleanup complete', {
       scanned: expired.size,
       cleaned,
@@ -1924,7 +1940,7 @@ export const reviewVerificationRequest = onCall(
       });
       const idImagePath = rejectedRequest.idImagePath;
       if (typeof idImagePath === 'string' && idImagePath) {
-        await getStorageBucket().file(idImagePath).delete({ ignoreNotFound: true });
+        await deleteVerificationImage(idImagePath, requestRef.id);
       }
       await sendVerificationReviewEmail({
         action: 'reject',

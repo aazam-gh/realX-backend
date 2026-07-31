@@ -865,8 +865,7 @@ export const approveVerificationRequest = onCall(
       throw new HttpsError("permission-denied", "Admin access required");
     }
 
-    const {verificationRequestId, firstName, lastName,
-      gender, dob, role, studentId} = data;
+    const {verificationRequestId} = data;
 
     if (!verificationRequestId) {
       throw new HttpsError(
@@ -879,77 +878,70 @@ export const approveVerificationRequest = onCall(
     const reqDoc = db
       .collection("verification_requests")
       .doc(verificationRequestId);
-    const requestSnap = await reqDoc.get();
-
-    if (!requestSnap.exists) {
-      throw new HttpsError("not-found", "Verification request not found");
-    }
-
-    const requestData = requestSnap.data();
-    if (requestData?.status !== "pending") {
-      throw new HttpsError(
-        "failed-precondition",
-        "Request has already been reviewed"
-      );
-    }
-
-    const email = requestData.email;
-
-    // Create student account
-    const result = await doCreateStudentUser({
-      firstName: firstName || "Student",
-      lastName: lastName || "",
-      email,
-      password: undefined,
-      gender: gender || "Unspecified",
-      dob: dob || new Date().toISOString().split("T")[0],
-      role: role || "student",
-      studentId: studentId || undefined,
-    });
-
-    // Update verification request
-    await reqDoc.update({
-      status: "approved",
-      reviewedAt: new Date(),
-      reviewedBy: auth.uid,
-      authUid: result.uid,
-    });
-
-    // Delete ID images from Storage
-    const bucket = getStorage().bucket();
-    const deleteFile = async (filePath: string) => {
-      if (filePath) {
-        try {
-          await bucket.file(filePath).delete();
-        } catch (err) {
-          logger.warn("Failed to delete storage file", {filePath, error: err});
-        }
+    const requestData = await db.runTransaction(async (transaction) => {
+      const requestSnap = await transaction.get(reqDoc);
+      if (!requestSnap.exists) {
+        throw new HttpsError("not-found", "Verification request not found");
       }
-    };
-    await deleteFile(requestData?.idImagePath);
+      if (requestSnap.data()?.status !== "pending") {
+        throw new HttpsError(
+          "failed-precondition",
+          "Request has already been reviewed"
+        );
+      }
+      transaction.update(reqDoc, {
+        status: "approving",
+        reviewedBy: auth.uid,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      return requestSnap.data() || {};
+    });
+
+    const email = String(requestData.email || "").trim().toLowerCase();
+    if (!email) {
+      await reqDoc.update({status: "pending", reviewedBy: null});
+      throw new HttpsError("failed-precondition", "Verification email is missing");
+    }
+
+    let uid: string;
+    try {
+      try {
+        uid = (await getAuth().getUserByEmail(email)).uid;
+      } catch (lookupError) {
+        if ((lookupError as {code?: string}).code !== "auth/user-not-found") {
+          throw lookupError;
+        }
+        uid = (await getAuth().createUser({
+          email,
+          emailVerified: true,
+        })).uid;
+      }
+
+      await reqDoc.update({
+        status: "approved",
+        reviewedAt: FieldValue.serverTimestamp(),
+        reviewedBy: auth.uid,
+        authUid: uid,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+    } catch (error) {
+      await reqDoc.update({
+        status: "pending",
+        reviewedBy: null,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      throw error;
+    }
 
     // Send welcome email via Resend
     try {
       const resend = new Resend(RESEND_API_KEY.value());
-      const displayName = `${firstName || "Student"} ${lastName || ""}`.trim();
-
       await resend.emails.send({
         from: "realX <welcome@realx.qa>",
         to: email,
-        subject: "Your realX Account is Ready!",
-        html: [
-          "<div style=\"font-family: Arial, sans-serif;",
-          "  max-width: 600px; margin: 0 auto;\">",
-          "  <h1 style=\"color: #16a34a;\">Welcome to RealX!</h1>",
-          `  <p>Hi ${displayName},</p>`,
-          "  <p>Your verification has been approved",
-          "    and your RealX account is now ready.</p>",
-          "  <p>You can log in using your email:",
-          `    <strong>${email}</strong></p>`,
-          "  <p style=\"margin-top: 24px;\">",
-          "    Best regards,<br>The realX Team</p>",
-          "</div>",
-        ].join("\n"),
+        subject: "Your realX student verification is approved",
+        text: "Your student status is verified. Open realX and continue " +
+          "with this email to finish your account.",
       });
       logger.info("Welcome email sent", {email});
     } catch (emailError) {
@@ -959,19 +951,18 @@ export const approveVerificationRequest = onCall(
 
     logger.info("Verification request approved", {
       verificationRequestId,
-      studentUid: result.uid,
+      authUid: uid,
     });
 
     return {
-      uid: result.uid,
-      creatorCode: result.creatorCode,
+      uid,
       success: true,
     };
   }
 );
 
 export const rejectVerificationRequest = onCall(
-  {region: REGION, cors: true},
+  {region: REGION, cors: true, secrets: [RESEND_API_KEY]},
   async (request: CallableRequest) => {
     const {auth, data} = request;
 
@@ -1003,39 +994,54 @@ export const rejectVerificationRequest = onCall(
     const reqDoc = db
       .collection("verification_requests")
       .doc(verificationRequestId);
-    const requestSnap = await reqDoc.get();
-
-    if (!requestSnap.exists) {
-      throw new HttpsError("not-found", "Verification request not found");
-    }
-
-    const requestData = requestSnap.data();
-    if (requestData?.status !== "pending") {
-      throw new HttpsError(
-        "failed-precondition",
-        "Request has already been reviewed"
-      );
-    }
-
-    await reqDoc.update({
-      status: "rejected",
-      rejectionReason,
-      reviewedAt: new Date(),
-      reviewedBy: auth.uid,
+    const normalizedReason = String(rejectionReason).trim().slice(0, 500);
+    const requestData = await db.runTransaction(async (transaction) => {
+      const requestSnap = await transaction.get(reqDoc);
+      if (!requestSnap.exists) {
+        throw new HttpsError("not-found", "Verification request not found");
+      }
+      if (requestSnap.data()?.status !== "pending") {
+        throw new HttpsError(
+          "failed-precondition",
+          "Request has already been reviewed"
+        );
+      }
+      transaction.update(reqDoc, {
+        status: "rejected",
+        rejectionReason: normalizedReason,
+        reviewedAt: FieldValue.serverTimestamp(),
+        reviewedBy: auth.uid,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      return requestSnap.data() || {};
     });
 
     // Delete ID images from Storage
-    const bucket = getStorage().bucket();
-    const deleteFile = async (filePath: string) => {
-      if (filePath) {
-        try {
-          await bucket.file(filePath).delete();
-        } catch (err) {
-          logger.warn("Failed to delete storage file", {filePath, error: err});
-        }
+    if (requestData.idImagePath) {
+      try {
+        await getStorage().bucket().file(requestData.idImagePath)
+          .delete({ignoreNotFound: true});
+        await reqDoc.update({idImagePath: FieldValue.delete()});
+      } catch (err) {
+        logger.warn("Failed to delete storage file", {
+          filePath: requestData.idImagePath,
+          error: err,
+        });
       }
-    };
-    await deleteFile(requestData?.idImagePath);
+    }
+
+    try {
+      const resend = new Resend(RESEND_API_KEY.value());
+      await resend.emails.send({
+        from: "realX <welcome@realx.qa>",
+        to: requestData.email,
+        subject: "Update on your realX student verification",
+        text: `We could not verify your student status: ${normalizedReason}. ` +
+          "Open realX to try again with a clearer document.",
+      });
+    } catch (emailError) {
+      logger.error("Failed to send rejection email", {error: emailError});
+    }
 
     logger.info("Verification request rejected", {verificationRequestId});
 
