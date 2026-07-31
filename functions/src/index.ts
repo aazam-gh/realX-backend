@@ -900,7 +900,10 @@ export const approveVerificationRequest = onCall(
     const email = String(requestData.email || "").trim().toLowerCase();
     if (!email) {
       await reqDoc.update({status: "pending", reviewedBy: null});
-      throw new HttpsError("failed-precondition", "Verification email is missing");
+      throw new HttpsError(
+        "failed-precondition",
+        "Verification email is missing"
+      );
     }
 
     let uid: string;

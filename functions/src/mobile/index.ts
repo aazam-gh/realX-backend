@@ -1836,10 +1836,15 @@ const sendVerificationReviewEmail = async ({
   rejectionReason?: string | null;
 }) => {
   const approved = action === 'approve';
-  const subject = approved ? 'Your realX student verification is approved' : 'Update on your realX student verification';
+  const subject = approved ?
+    'Your realX student verification is approved' :
+    'Update on your realX student verification';
   const message = approved
-    ? 'Your student status is verified. Open realX and continue with this email to finish your account.'
-    : `We could not verify your student status${rejectionReason ? `: ${rejectionReason}` : '. Please open realX to try again with a clearer document.'}`;
+    ? 'Your student status is verified. Open realX and continue ' +
+      'with this email to finish your account.'
+    : rejectionReason
+      ? `We could not verify your student status: ${rejectionReason}`
+      : 'We could not verify your student status. Open realX to try again with a clearer document.';
 
   try {
     await getResend().emails.send({
