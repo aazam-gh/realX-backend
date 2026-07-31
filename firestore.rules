@@ -91,6 +91,33 @@ function isValidSavedMapPlace() {
     && request.resource.data.updatedAt is timestamp;
 }
 
+function isValidSavedOpportunity() {
+  return request.resource.data.keys().hasOnly([
+      'type',
+      'opportunityId',
+      'kind',
+      'titleEn',
+      'titleAr',
+      'providerName',
+      'imageUrl',
+      'deadline',
+      'createdAt',
+      'updatedAt'
+    ])
+    && request.resource.data.keys().hasAll([
+      'type',
+      'opportunityId',
+      'kind',
+      'createdAt',
+      'updatedAt'
+    ])
+    && request.resource.data.type == 'opportunity'
+    && request.resource.data.opportunityId is string
+    && request.resource.data.kind is string
+    && request.resource.data.createdAt is timestamp
+    && request.resource.data.updatedAt is timestamp;
+}
+
 // ─── students collection ───────────────────────────────────────────────
 match /students/{userId} {
 
@@ -114,7 +141,9 @@ match /students/{userId} {
       && (request.auth.uid == userId || isAdmin());
     allow create, update: if request.auth != null
       && request.auth.uid == userId
-      && (isValidSavedOffer() || isValidSavedMapPlace());
+      && (isValidSavedOffer()
+        || isValidSavedMapPlace()
+        || isValidSavedOpportunity());
     allow delete: if request.auth != null
       && (request.auth.uid == userId || isAdmin());
   }
@@ -156,6 +185,46 @@ match /offers/{offerId} {
 
 // ─── events collection ────────────────────────────────────────────────
 match /events/{eventId} {
+  allow read: if true;
+  allow write: if isAdmin();
+}
+
+// ─── student-life opportunities ──────────────────────────────────────
+match /opportunities/{opportunityId} {
+  allow read: if isAdmin() || resource.data.status == 'published';
+  allow write: if isAdmin();
+}
+
+match /opportunityActionConfigs/{opportunityId} {
+  allow read, write: if isAdmin();
+}
+
+match /opportunityActionRequests/{requestId} {
+  allow read, write: if false;
+}
+
+match /opportunityAnalytics/{opportunityId} {
+  allow read: if isAdmin();
+  allow write: if false;
+
+  match /{document=**} {
+    allow read: if isAdmin();
+    allow write: if false;
+  }
+}
+
+match /rewardAccounts/{userId} {
+  allow read: if request.auth != null
+    && (request.auth.uid == userId || isAdmin());
+  allow write: if false;
+}
+
+match /missions/{missionId} {
+  allow read: if true;
+  allow write: if isAdmin();
+}
+
+match /rewardCatalog/{rewardId} {
   allow read: if true;
   allow write: if isAdmin();
 }

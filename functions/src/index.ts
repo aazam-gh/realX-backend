@@ -1304,9 +1304,11 @@ export const rebuildMapLocationIndex = onCall(
 export {
   assignCreatorCode,
   backfillVendorGeohashes,
+  cancelVerificationRequest,
   checkStudentExists,
   checkStudentExistsLogin,
   checkVerificationStatus,
+  cleanupExpiredVerificationRequests,
   completeSignup,
   getOnlineVendorOffer,
   getOnlineRedemptionPreview,

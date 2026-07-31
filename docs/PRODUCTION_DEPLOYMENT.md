@@ -6,7 +6,7 @@ Firestore rules and indexes, and Storage rules for `reelx-backend`.
 ## Required Checks
 
 Run `npm run check` before every deployment. The check validates Functions,
-tests the exact 35-function export manifest, compares it with production, and
+tests the exact function export manifest, compares it with production, and
 rejects plaintext secret environment variables.
 
 ## Deployments
@@ -31,6 +31,16 @@ Never use `--force`. Record the commit SHA, operator, scope, dry-run output, and
 post-deployment validation results.
 
 ## Secret Rotation
+
+Before deploying OTP hashing for the first time, create a high-entropy secret:
+
+```sh
+openssl rand -base64 48 | firebase functions:secrets:set OTP_HMAC_SECRET --data-file=- --project reelx-backend
+```
+
+Deploy `sendOtp` and `verifyOtp` together so newly issued codes always use the
+same secret-backed format. Rotating this secret invalidates any code that is
+still inside its five-minute validity window.
 
 Create a new provider key, store it with
 `firebase functions:secrets:set RESEND_API_KEY --project reelx-backend`, deploy

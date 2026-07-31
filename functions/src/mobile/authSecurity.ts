@@ -1,4 +1,4 @@
-import { createHash } from 'crypto';
+import { createHash, createHmac, timingSafeEqual } from 'crypto';
 import { CallableRequest } from 'firebase-functions/v2/https';
 
 const ALLOWED_STUDENT_EMAIL_DOMAINS = new Set([
@@ -37,11 +37,56 @@ export const isAllowedStudentEmail = (email: string) => {
 export const isValidOtpPurpose = (purpose: unknown) =>
   typeof purpose === 'string' && OTP_PURPOSES.includes(purpose);
 
+export const hashOtp = (email: string, code: string, secret: string) =>
+  createHmac('sha256', secret)
+    .update(`${email.trim().toLowerCase()}:${code}`)
+    .digest('hex');
+
+export const otpMatches = (
+  email: string,
+  code: string,
+  expectedHash: unknown,
+  secret: string,
+) => {
+  if (typeof expectedHash !== 'string') return false;
+  const actual = Buffer.from(hashOtp(email, code, secret), 'hex');
+  const expected = Buffer.from(expectedHash, 'hex');
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
+};
+
 export const isValidSignupRole = (role: unknown) =>
   role === 'student' || role === 'creator';
 
 export const isValidSignupGender = (gender: unknown) =>
   gender === 'Male' || gender === 'Female';
+
+type VerificationAccessRecord = {
+  authUid?: unknown;
+  email?: unknown;
+  status?: unknown;
+};
+
+export const getApprovedVerificationUid = (
+  record: VerificationAccessRecord | null | undefined,
+  email: string,
+) => {
+  if (
+    record?.status !== 'approved' ||
+    typeof record.authUid !== 'string' ||
+    typeof record.email !== 'string' ||
+    record.email.trim().toLowerCase() !== email.trim().toLowerCase()
+  ) {
+    return null;
+  }
+
+  return record.authUid;
+};
+
+export const canCompleteApprovedVerificationSignup = (
+  record: VerificationAccessRecord | null | undefined,
+  uid: string,
+  email: string,
+) => getApprovedVerificationUid(record, email) === uid;
 
 export const isValidDob = (dob: unknown) => {
   if (typeof dob !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(dob)) return false;

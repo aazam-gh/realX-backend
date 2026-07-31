@@ -13,9 +13,13 @@ test("normalizes BigQuery scalar wrappers and missing values", () => {
       transacting_vendors: "11",
       offer_redemptions: 48,
       transactions: null,
+      transaction_value: {value: "1763.48"},
     },
-    monthly_revenue: [
-      {month: "Jul", amount: {value: "1763.48"}},
+    transaction_trend: [
+      {label: "Jul", transactions: "3", value: {value: "1763.48"}},
+    ],
+    transaction_breakdown: [
+      {type: "offer", transactions: "3", value: "1763.48"},
     ],
     top_vendors: [
       {name: "Qatar Cinema", sales: "150"},
@@ -38,8 +42,10 @@ test("normalizes BigQuery scalar wrappers and missing values", () => {
     transactingVendors: 11,
     offerRedemptions: 48,
     transactions: 0,
+    transactionValue: 1763.48,
   });
-  assert.equal(result.monthlyRevenue[0].amount, 1763.48);
+  assert.equal(result.transactionTrend[0].value, 1763.48);
+  assert.equal(result.transactionBreakdown[0].transactions, 3);
   assert.equal(result.topVendors[0].sales, 150);
   assert.equal(result.recentActivity[0].amount, 75);
 });

@@ -3,6 +3,7 @@
 
 import * as admin from 'firebase-admin';
 import { CallableRequest, HttpsError, onCall, onRequest } from 'firebase-functions/v2/https';
+import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { defineSecret } from 'firebase-functions/params';
 import { Resend } from 'resend';
 import '../global-options.js';
@@ -31,13 +32,17 @@ import {
 import { createGeospatialFunctions } from './geospatial';
 import { createNotificationFunctions } from './notifications';
 import {
+  canCompleteApprovedVerificationSignup,
   getRequestFingerprint,
+  getApprovedVerificationUid,
+  hashOtp,
   isAllowedStudentEmail,
   isValidDob,
   isValidEmail,
   isValidOtpPurpose,
   isValidSignupGender,
   isValidSignupRole,
+  otpMatches,
 } from './authSecurity';
 import {
   normalizeHttpsPurchaseUrl,
@@ -48,6 +53,7 @@ import {
 if (admin.apps.length === 0) admin.initializeApp();
 
 const RESEND_API_KEY = defineSecret('RESEND_API_KEY');
+const OTP_HMAC_SECRET = defineSecret('OTP_HMAC_SECRET');
 let _resend: Resend | null = null;
 function getResend(): Resend {
   if (!_resend) {
@@ -71,6 +77,7 @@ const getStorageBucket = () => {
   return admin.storage().bucket(bucketName);
 };
 const REVIEW_EMAIL = (process.env.APPLE_REVIEW_EMAIL || 'apple-review@realx.qa').toLowerCase().trim();
+const getOtpHmacSecret = () => OTP_HMAC_SECRET.value();
 /**
  * =============================
  * Utils
@@ -458,6 +465,7 @@ const processTransaction = async ({
   const vendorRef = db.collection('vendors').doc(vendorId);
   const secretRef = db.collection('vendorRedemptionSecrets').doc(vendorId);
   const transactionRef = db.collection('transactions').doc();
+  const rewardAccountRef = db.collection('rewardAccounts').doc(uid);
 
   return db.runTransaction(async (tx) => {
     /**
@@ -620,6 +628,14 @@ const processTransaction = async ({
     if (Object.keys(userUpdates).length > 0) {
       tx.update(userRef, userUpdates);
     }
+
+    tx.set(rewardAccountRef, {
+      userId: uid,
+      statusPoints: admin.firestore.FieldValue.increment(100),
+      redemptionCount: admin.firestore.FieldValue.increment(1),
+      lastEarnedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
 
     /**
      * =============================
@@ -996,6 +1012,13 @@ const COOLDOWN_MS = 60 * 1000; // 60 seconds
 const MAX_VERIFY_ATTEMPTS = 3;
 const getOtpRef = (email: string) =>
   db.collection('otps').doc(hashDocId(`otp:${email}`));
+const getVerificationRequestRef = (email: string) =>
+  db.collection('verification_requests').doc(hashDocId(`verification:${email}`));
+
+const getApprovedVerificationAuthUid = async (email: string) => {
+  const verificationDoc = await getVerificationRequestRef(email).get();
+  return getApprovedVerificationUid(verificationDoc.data(), email);
+};
 
 const generateOtpCode = () => randomInt(100000, 1000000).toString();
 
@@ -1050,7 +1073,7 @@ async function checkAccountRateLimit(key: string): Promise<void> {
  * =============================
  */
 export const sendOtp = onCall(
-  { secrets: [RESEND_API_KEY], enforceAppCheck: true },
+  { secrets: [RESEND_API_KEY, OTP_HMAC_SECRET], enforceAppCheck: true },
   async (request: CallableRequest) => {
     const email = request.data?.email?.toLowerCase()?.trim();
     const purpose = request.data?.purpose; // "signup" | "login" | "verification"
@@ -1133,7 +1156,11 @@ export const sendOtp = onCall(
         .limit(1)
         .get();
 
-      if (snapshot.empty) {
+      const approvedAuthUid = snapshot.empty
+        ? await getApprovedVerificationAuthUid(email)
+        : null;
+
+      if (snapshot.empty && !approvedAuthUid) {
         throw new HttpsError('not-found', 'No account found with this email');
       }
     }
@@ -1190,7 +1217,7 @@ export const sendOtp = onCall(
 
       tx.set(otpRef, {
         email,
-        code: nextCode,
+        codeHash: hashOtp(email, nextCode, getOtpHmacSecret()),
         attempts: 0,
         createdAt: now,
         expiresAt: admin.firestore.Timestamp.fromMillis(now.toMillis() + OTP_EXPIRY_MINUTES * 60 * 1000),
@@ -1243,7 +1270,7 @@ export const sendOtp = onCall(
  * =============================
  */
 export const verifyOtp = onCall(
-  { enforceAppCheck: true },
+  { secrets: [OTP_HMAC_SECRET], enforceAppCheck: true },
   async (request: CallableRequest) => {
     const email = request.data?.email?.toLowerCase()?.trim();
     const code = request.data?.code?.trim();
@@ -1292,7 +1319,11 @@ export const verifyOtp = onCall(
 
       const nextAttempts = currentAttempts + 1;
 
-      if (data.code !== code) {
+      const codeMatches = data.codeHash
+        ? otpMatches(email, code, data.codeHash, getOtpHmacSecret())
+        : data.code === code;
+
+      if (!codeMatches) {
         const remaining = MAX_VERIFY_ATTEMPTS - nextAttempts;
         tx.update(otpRef, {
           attempts: nextAttempts,
@@ -1351,10 +1382,14 @@ export const verifyOtp = onCall(
         .get();
 
       if (snapshot.empty) {
-        throw new HttpsError('not-found', 'No account found with this email');
+        const approvedAuthUid = await getApprovedVerificationAuthUid(email);
+        if (!approvedAuthUid) {
+          throw new HttpsError('not-found', 'No account found with this email');
+        }
+        uid = approvedAuthUid;
+      } else {
+        uid = snapshot.docs[0].id;
       }
-
-      uid = snapshot.docs[0].id;
     }
 
     // Generate custom token
@@ -1390,7 +1425,15 @@ export const completeSignup = onCall(
       throw new HttpsError('permission-denied', 'Authenticated email does not match signup email');
     }
 
-    if (!isAllowedStudentEmail(requestedEmail)) {
+    const verificationRef = getVerificationRequestRef(requestedEmail);
+    const verificationDoc = await verificationRef.get();
+    const isApprovedManualSignup = canCompleteApprovedVerificationSignup(
+      verificationDoc.data(),
+      uid,
+      requestedEmail,
+    );
+
+    if (!isAllowedStudentEmail(requestedEmail) && !isApprovedManualSignup) {
       throw new HttpsError('permission-denied', 'Only approved school emails can complete self-signup');
     }
 
@@ -1398,12 +1441,12 @@ export const completeSignup = onCall(
       throw new HttpsError('invalid-argument', 'First and last name are required');
     }
 
-    if (!isValidDob(dob)) {
-      throw new HttpsError('invalid-argument', 'Valid date of birth is required');
+    if (dob && !isValidDob(dob)) {
+      throw new HttpsError('invalid-argument', 'Date of birth must be valid when provided');
     }
 
-    if (!isValidSignupGender(gender)) {
-      throw new HttpsError('invalid-argument', 'Valid gender is required');
+    if (gender && !isValidSignupGender(gender)) {
+      throw new HttpsError('invalid-argument', 'Gender must be valid when provided');
     }
 
     if (!isValidSignupRole(role)) {
@@ -1422,7 +1465,7 @@ export const completeSignup = onCall(
 
     const studentRef = db.collection('students').doc(uid);
 
-    return db.runTransaction(async (tx) => {
+    const signupResult = await db.runTransaction(async (tx) => {
       const studentDoc = await tx.get(studentRef);
 
       if (studentDoc.exists) {
@@ -1452,8 +1495,6 @@ export const completeSignup = onCall(
       const studentData: Record<string, unknown> = {
         firstName,
         lastName,
-        dob,
-        gender,
         email: requestedEmail,
         role,
         cashback: 0,
@@ -1461,6 +1502,8 @@ export const completeSignup = onCall(
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         uid,
       };
+      if (dob) studentData.dob = dob;
+      if (gender) studentData.gender = gender;
 
       let creatorCode = null;
       if (role === 'creator') {
@@ -1472,6 +1515,20 @@ export const completeSignup = onCall(
 
       return { success: true, creatorCode };
     });
+
+    if (isApprovedManualSignup) {
+      const idImagePath = verificationDoc.data()?.idImagePath;
+      await verificationRef.set({
+        status: 'profile_completed',
+        completedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+      if (typeof idImagePath === 'string' && idImagePath) {
+        await getStorageBucket().file(idImagePath).delete({ ignoreNotFound: true });
+      }
+    }
+
+    return signupResult;
   }
 );
 /**
@@ -1542,7 +1599,7 @@ export const submitVerificationRequest = onCall(
     }
 
     // Create Firestore doc first to get requestId
-    const requestRef = db.collection('verification_requests').doc(hashDocId(`verification:${normalizedEmail}`));
+    const requestRef = getVerificationRequestRef(normalizedEmail);
     const requestId = requestRef.id;
     const statusToken = secureToken();
 
@@ -1601,10 +1658,7 @@ export const checkVerificationStatus = onCall(
       throw new HttpsError('invalid-argument', 'Email and status token are required');
     }
 
-    const requestDoc = await db
-      .collection('verification_requests')
-      .doc(hashDocId(`verification:${email}`))
-      .get();
+    const requestDoc = await getVerificationRequestRef(email).get();
 
     const data = requestDoc.data() || {};
     if (!requestDoc.exists || !secureTokenMatches(statusToken, data.statusTokenHash)) {
@@ -1618,6 +1672,90 @@ export const checkVerificationStatus = onCall(
       role: data.role || 'student',
     };
   }
+);
+
+export const cancelVerificationRequest = onCall(
+  { enforceAppCheck: true },
+  async (request: CallableRequest) => {
+    const email = request.data?.email?.toLowerCase()?.trim();
+    const statusToken = typeof request.data?.statusToken === 'string' ? request.data.statusToken : '';
+    if (!email || !statusToken) {
+      throw new HttpsError('invalid-argument', 'Email and status token are required');
+    }
+
+    const requestRef = getVerificationRequestRef(email);
+    const requestData = await db.runTransaction(async (tx) => {
+      const requestDoc = await tx.get(requestRef);
+      const data = requestDoc.data() || {};
+      if (!requestDoc.exists || !secureTokenMatches(statusToken, data.statusTokenHash)) {
+        throw new HttpsError('permission-denied', 'Invalid verification status token');
+      }
+      if (data.status !== 'pending') {
+        throw new HttpsError('failed-precondition', 'Only pending verification requests can be cancelled');
+      }
+      tx.update(requestRef, {
+        status: 'cancelled',
+        cancelledAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      return data;
+    });
+
+    if (typeof requestData.idImagePath === 'string' && requestData.idImagePath) {
+      await getStorageBucket().file(requestData.idImagePath).delete({ ignoreNotFound: true });
+    }
+    return { success: true };
+  }
+);
+
+export const cleanupExpiredVerificationRequests = onSchedule(
+  { schedule: 'every day 03:00', timeZone: 'Asia/Qatar' },
+  async () => {
+    const now = admin.firestore.Timestamp.now();
+    const expired = await db
+      .collection('verification_requests')
+      .where('expiresAt', '<=', now)
+      .limit(200)
+      .get();
+
+    const batch = db.batch();
+    let cleaned = 0;
+
+    for (const requestDoc of expired.docs) {
+      const data = requestDoc.data();
+      if (data.status === 'approving') continue;
+
+      if (typeof data.idImagePath === 'string' && data.idImagePath) {
+        try {
+          await getStorageBucket().file(data.idImagePath).delete({ ignoreNotFound: true });
+        } catch (error) {
+          console.error('Unable to delete expired verification image', {
+            requestId: requestDoc.id,
+            error,
+          });
+          continue;
+        }
+      }
+
+      const updates: Record<string, unknown> = {
+        expiresAt: admin.firestore.FieldValue.delete(),
+        idImagePath: admin.firestore.FieldValue.delete(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      };
+      if (data.status === 'pending') {
+        updates.status = 'expired';
+        updates.expiredAt = admin.firestore.FieldValue.serverTimestamp();
+      }
+      batch.update(requestDoc.ref, updates);
+      cleaned += 1;
+    }
+
+    if (cleaned > 0) await batch.commit();
+    console.info('Expired verification cleanup complete', {
+      scanned: expired.size,
+      cleaned,
+    });
+  },
 );
 
 export const listPendingVerificationRequests = onCall(
@@ -1672,8 +1810,35 @@ export const listPendingVerificationRequests = onCall(
   }
 );
 
+const sendVerificationReviewEmail = async ({
+  action,
+  email,
+  rejectionReason,
+}: {
+  action: 'approve' | 'reject';
+  email: string;
+  rejectionReason?: string | null;
+}) => {
+  const approved = action === 'approve';
+  const subject = approved ? 'Your realX student verification is approved' : 'Update on your realX student verification';
+  const message = approved
+    ? 'Your student status is verified. Open realX and continue with this email to finish your account.'
+    : `We could not verify your student status${rejectionReason ? `: ${rejectionReason}` : '. Please open realX to try again with a clearer document.'}`;
+
+  try {
+    await getResend().emails.send({
+      from: 'realX <welcome@realx.qa>',
+      to: email,
+      subject,
+      text: message,
+    });
+  } catch (error) {
+    console.error('Failed to send verification review email', { action, error });
+  }
+};
+
 export const reviewVerificationRequest = onCall(
-  { enforceAppCheck: true },
+  { secrets: [RESEND_API_KEY], enforceAppCheck: true },
   async (request: CallableRequest) => {
     if (!request.auth) {
       throw new HttpsError('unauthenticated', 'Login required');
@@ -1728,6 +1893,10 @@ export const reviewVerificationRequest = onCall(
           reviewedBy: request.auth.uid,
           authUid: uid,
         });
+        await sendVerificationReviewEmail({
+          action: 'approve',
+          email: requestData.email,
+        });
       } catch (error) {
         await requestRef.update({
           status: 'pending',
@@ -1737,7 +1906,7 @@ export const reviewVerificationRequest = onCall(
         throw error;
       }
     } else {
-      await db.runTransaction(async (tx) => {
+      const rejectedRequest = await db.runTransaction(async (tx) => {
         const requestDoc = await tx.get(requestRef);
         if (!requestDoc.exists) {
           throw new HttpsError('not-found', 'Verification request not found');
@@ -1751,6 +1920,16 @@ export const reviewVerificationRequest = onCall(
           reviewedBy: request.auth?.uid,
           rejectionReason: typeof rejectionReason === 'string' ? rejectionReason.trim().slice(0, 500) : null,
         });
+        return requestDoc.data() || {};
+      });
+      const idImagePath = rejectedRequest.idImagePath;
+      if (typeof idImagePath === 'string' && idImagePath) {
+        await getStorageBucket().file(idImagePath).delete({ ignoreNotFound: true });
+      }
+      await sendVerificationReviewEmail({
+        action: 'reject',
+        email: rejectedRequest.email,
+        rejectionReason: typeof rejectionReason === 'string' ? rejectionReason.trim().slice(0, 500) : null,
       });
     }
 

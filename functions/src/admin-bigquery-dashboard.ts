@@ -19,16 +19,24 @@ interface DashboardStatsRow {
   transacting_vendors?: BigQueryValue<string> | string | number | null;
   offer_redemptions?: BigQueryValue<string> | string | number | null;
   transactions?: BigQueryValue<string> | string | number | null;
+  transaction_value?: BigQueryValue<string> | string | number | null;
 }
 
-interface MonthlyRevenueRow {
-  month?: string | null;
-  amount?: BigQueryValue<string> | string | number | null;
+interface TransactionTrendRow {
+  label?: string | null;
+  transactions?: BigQueryValue<string> | string | number | null;
+  value?: BigQueryValue<string> | string | number | null;
 }
 
 interface TopVendorRow {
   name?: string | null;
   sales?: BigQueryValue<string> | string | number | null;
+}
+
+interface TransactionBreakdownRow {
+  type?: string | null;
+  transactions?: BigQueryValue<string> | string | number | null;
+  value?: BigQueryValue<string> | string | number | null;
 }
 
 interface LiveActivityRow {
@@ -42,7 +50,8 @@ interface LiveActivityRow {
 
 interface AdminDashboardRow {
   stats?: DashboardStatsRow | null;
-  monthly_revenue?: MonthlyRevenueRow[] | null;
+  transaction_trend?: TransactionTrendRow[] | null;
+  transaction_breakdown?: TransactionBreakdownRow[] | null;
   top_vendors?: TopVendorRow[] | null;
   recent_activity?: LiveActivityRow[] | null;
   freshness?: string | null;
@@ -54,8 +63,10 @@ export interface AdminBigQueryDashboardResult {
     transactingVendors: number;
     offerRedemptions: number;
     transactions: number;
+    transactionValue: number;
   };
-  monthlyRevenue: Array<{month: string; amount: number}>;
+  transactionTrend: Array<{label: string; transactions: number; value: number}>;
+  transactionBreakdown: Array<{type: string; transactions: number; value: number}>;
   topVendors: Array<{name: string; sales: number}>;
   recentActivity: Array<{
     id: string;
@@ -66,6 +77,22 @@ export interface AdminBigQueryDashboardResult {
     status: string;
   }>;
   freshness: string | null;
+}
+
+type DashboardRange = "30d" | "90d" | "6mo";
+
+const DASHBOARD_RANGE_CONFIG: Record<DashboardRange, {
+  daysBack: number;
+  bucket: "day" | "week" | "month";
+}> = {
+  "30d": {daysBack: 29, bucket: "day"},
+  "90d": {daysBack: 89, bucket: "week"},
+  "6mo": {daysBack: 182, bucket: "month"},
+};
+
+function parseDashboardRange(value: unknown): DashboardRange {
+  if (value === "30d" || value === "90d" || value === "6mo") return value;
+  return "6mo";
 }
 
 const DASHBOARD_SQL = `
@@ -83,18 +110,26 @@ const DASHBOARD_SQL = `
       FROM ${VIEW}
       WHERE type != 'online_redemption'
     ),
-    months AS (
-      SELECT month_start
+    ranged AS (
+      SELECT *
+      FROM base
+      WHERE DATE(created_at, 'Asia/Qatar') >= DATE_SUB(
+        CURRENT_DATE('Asia/Qatar'), INTERVAL @days_back DAY
+      )
+    ),
+    trend_buckets AS (
+      SELECT DISTINCT
+        CASE @bucket
+          WHEN 'month' THEN DATE_TRUNC(day, MONTH)
+          WHEN 'week' THEN DATE_TRUNC(day, WEEK(MONDAY))
+          ELSE day
+        END AS bucket_start
       FROM UNNEST(
         GENERATE_DATE_ARRAY(
-          DATE_SUB(
-            DATE_TRUNC(CURRENT_DATE('Asia/Qatar'), MONTH),
-            INTERVAL 5 MONTH
-          ),
-          DATE_TRUNC(CURRENT_DATE('Asia/Qatar'), MONTH),
-          INTERVAL 1 MONTH
+          DATE_SUB(CURRENT_DATE('Asia/Qatar'), INTERVAL @days_back DAY),
+          CURRENT_DATE('Asia/Qatar')
         )
-      ) AS month_start
+      ) AS day
     )
   SELECT
     (
@@ -102,26 +137,42 @@ const DASHBOARD_SQL = `
         COUNT(DISTINCT user_id) AS transacting_students,
         COUNT(DISTINCT vendor_id) AS transacting_vendors,
         COUNTIF(type = 'offer') AS offer_redemptions,
-        COUNT(*) AS transactions
+        COUNT(*) AS transactions,
+        ROUND(SUM(amount), 2) AS transaction_value
       FROM base
     ) AS stats,
     ARRAY(
       SELECT AS STRUCT
-        FORMAT_DATE('%b', months.month_start) AS month,
-        ROUND(COALESCE(SUM(base.amount), 0), 2) AS amount
-      FROM months
-      LEFT JOIN base
-        ON DATE_TRUNC(DATE(base.created_at, 'Asia/Qatar'), MONTH) =
-          months.month_start
-      GROUP BY months.month_start
-      ORDER BY months.month_start
-    ) AS monthly_revenue,
+        FORMAT_DATE(
+          IF(@bucket = 'month', '%b', IF(@bucket = 'week', '%d %b', '%d %b')),
+          trend_buckets.bucket_start
+        ) AS label,
+        COUNT(ranged.id) AS transactions,
+        ROUND(COALESCE(SUM(ranged.amount), 0), 2) AS value
+      FROM trend_buckets
+      LEFT JOIN ranged
+        ON CASE @bucket
+          WHEN 'month' THEN DATE_TRUNC(DATE(ranged.created_at, 'Asia/Qatar'), MONTH)
+          WHEN 'week' THEN DATE_TRUNC(DATE(ranged.created_at, 'Asia/Qatar'), WEEK(MONDAY))
+          ELSE DATE(ranged.created_at, 'Asia/Qatar')
+        END = trend_buckets.bucket_start
+      GROUP BY trend_buckets.bucket_start
+      ORDER BY trend_buckets.bucket_start
+    ) AS transaction_trend,
+    ARRAY(
+      SELECT AS STRUCT
+        COALESCE(NULLIF(type, ''), 'unspecified') AS type,
+        COUNT(*) AS transactions,
+        ROUND(SUM(amount), 2) AS value
+      FROM ranged
+      GROUP BY type
+      ORDER BY transactions DESC, type
+    ) AS transaction_breakdown,
     ARRAY(
       SELECT AS STRUCT
         COALESCE(NULLIF(vendor_name, ''), 'Unknown Vendor') AS name,
         ROUND(SUM(amount), 2) AS sales
-      FROM base
-      WHERE created_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY)
+      FROM ranged
       GROUP BY name
       ORDER BY sales DESC, name
       LIMIT 5
@@ -175,10 +226,17 @@ export function normalizeAdminBigQueryDashboardRow(
       transactingVendors: numberValue(stats.transacting_vendors),
       offerRedemptions: numberValue(stats.offer_redemptions),
       transactions: numberValue(stats.transactions),
+      transactionValue: numberValue(stats.transaction_value),
     },
-    monthlyRevenue: (row?.monthly_revenue || []).map((item) => ({
-      month: item.month || "",
-      amount: numberValue(item.amount),
+    transactionTrend: (row?.transaction_trend || []).map((item) => ({
+      label: item.label || "",
+      transactions: numberValue(item.transactions),
+      value: numberValue(item.value),
+    })),
+    transactionBreakdown: (row?.transaction_breakdown || []).map((item) => ({
+      type: item.type || "unspecified",
+      transactions: numberValue(item.transactions),
+      value: numberValue(item.value),
     })),
     topVendors: (row?.top_vendors || []).map((item) => ({
       name: item.name || "Unknown Vendor",
@@ -223,12 +281,17 @@ export async function getAdminBigQueryDashboardHandler(
   }
 
   const startedAt = Date.now();
+  const range = parseDashboardRange(request.data?.range);
   const byteBudget = getMaximumBytesBilled();
 
   try {
     const [job] = await bigquery.createQueryJob({
       query: DASHBOARD_SQL,
       location: LOCATION,
+      params: {
+        days_back: DASHBOARD_RANGE_CONFIG[range].daysBack,
+        bucket: DASHBOARD_RANGE_CONFIG[range].bucket,
+      },
       maximumBytesBilled: byteBudget.toString(),
       useLegacySql: false,
       labels: {
