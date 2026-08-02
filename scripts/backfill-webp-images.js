@@ -5,6 +5,7 @@ const sharp = require("sharp");
 const DEFAULT_PREFIXES = [
   "banners/",
   "trending-offer-banners/",
+  "new-deal-banners/",
   "vendors/",
   "categories/",
   "brands/",

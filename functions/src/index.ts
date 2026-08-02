@@ -34,6 +34,7 @@ const WEBP_CONVERTED_METADATA_KEY = "convertedToWebp";
 const PUBLIC_IMAGE_PATHS = [
   /^banners\//,
   /^trending-offer-banners\//,
+  /^new-deal-banners\//,
   /^vendors\/[^/]+\/branding\//,
   /^vendors\/[^/]+\/gallery\//,
   /^categories\//,
