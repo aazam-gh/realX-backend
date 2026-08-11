@@ -6,6 +6,7 @@
   "checkStudentExists",
   "checkStudentExistsLogin",
   "checkVerificationStatus",
+  "cleanupApprovedVerificationRequests",
   "cleanupExpiredVerificationRequests",
   "completeSignup",
   "convertUploadedImageToWebp",

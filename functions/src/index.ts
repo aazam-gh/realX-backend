@@ -1,6 +1,7 @@
 import {onCall, HttpsError, CallableRequest} from "firebase-functions/v2/https";
 import {onDocumentWritten} from "firebase-functions/v2/firestore";
 import {onObjectFinalized} from "firebase-functions/v2/storage";
+import {onSchedule} from "firebase-functions/v2/scheduler";
 import {defineSecret} from "firebase-functions/params";
 import * as logger from "firebase-functions/logger";
 
@@ -31,6 +32,8 @@ const RESEND_API_KEY = defineSecret("RESEND_API_KEY");
 const STORAGE_BUCKET = "reelx-backend";
 const WEBP_QUALITY = 80;
 const WEBP_CONVERTED_METADATA_KEY = "convertedToWebp";
+const VERIFICATION_REQUEST_RETENTION_DAYS = 7;
+const VERIFICATION_REQUEST_CLEANUP_BATCH_SIZE = 500;
 const PUBLIC_IMAGE_PATHS = [
   /^banners\//,
   /^trending-offer-banners\//,
@@ -1076,7 +1079,7 @@ export const deleteVerificationRequest = onCall(
     }
 
     const db = getFirestore();
-    const bucket = getStorage().bucket();
+    const bucket = getStorage().bucket(STORAGE_BUCKET);
     const reqDoc = db
       .collection("verification_requests")
       .doc(verificationRequestId);
@@ -1107,6 +1110,72 @@ export const deleteVerificationRequest = onCall(
     logger.info("Verification request deleted", {verificationRequestId});
 
     return {success: true};
+  }
+);
+
+/**
+ * Remove reviewed verification requests after the retention period.
+ * User/Auth records are created independently and are intentionally untouched.
+ */
+export const cleanupApprovedVerificationRequests = onSchedule(
+  {
+    schedule: "0 2 * * *",
+    timeZone: "Asia/Qatar",
+    region: REGION,
+    timeoutSeconds: 540,
+  },
+  async () => {
+    const db = getFirestore();
+    const bucket = getStorage().bucket(STORAGE_BUCKET);
+    const cutoff = new Date(
+      Date.now() - VERIFICATION_REQUEST_RETENTION_DAYS * 24 * 60 * 60 * 1000
+    );
+
+    const snapshot = await db
+      .collection("verification_requests")
+      .where("status", "in", ["approved", "verified"])
+      .where("reviewedAt", "<=", cutoff)
+      .get();
+
+    let imagesDeleted = 0;
+    let imageDeleteFailures = 0;
+
+    for (const doc of snapshot.docs) {
+      const idImagePath = doc.data().idImagePath;
+      if (typeof idImagePath !== "string" || !idImagePath) {
+        continue;
+      }
+
+      try {
+        await bucket.file(idImagePath).delete();
+        imagesDeleted += 1;
+      } catch (error) {
+        imageDeleteFailures += 1;
+        logger.warn("Failed to delete verification request image", {
+          verificationRequestId: doc.id,
+          idImagePath,
+          error,
+        });
+      }
+    }
+
+    for (let index = 0; index < snapshot.docs.length;
+      index += VERIFICATION_REQUEST_CLEANUP_BATCH_SIZE) {
+      const batch = db.batch();
+      const docs = snapshot.docs.slice(
+        index,
+        index + VERIFICATION_REQUEST_CLEANUP_BATCH_SIZE
+      );
+      docs.forEach((doc) => batch.delete(doc.ref));
+      await batch.commit();
+    }
+
+    logger.info("Verification request retention cleanup completed", {
+      cutoff: cutoff.toISOString(),
+      requestsDeleted: snapshot.size,
+      imagesDeleted,
+      imageDeleteFailures,
+    });
   }
 );
 

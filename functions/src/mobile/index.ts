@@ -169,6 +169,31 @@ const parseHttpsPurchaseUrl = (value: unknown) => {
   return purchaseUrl;
 };
 
+type OnlineFulfillmentMode = 'coupon' | 'outbound_link' | 'partner_managed';
+type OnlinePlatform = 'ios' | 'android' | 'web';
+
+const parseOnlineFulfillmentMode = (value: unknown): OnlineFulfillmentMode => {
+  if (value === 'outbound_link' || value === 'partner_managed') return value;
+  return 'coupon';
+};
+
+const parseOptionalHttpsUrl = (value: unknown) => {
+  if (value == null || value === '') return undefined;
+  return parseHttpsPurchaseUrl(value);
+};
+
+const parseOptionalText = (value: unknown, maxLength = 500) => {
+  if (typeof value !== 'string') return undefined;
+  const text = value.trim();
+  return text && text.length <= maxLength ? text : undefined;
+};
+
+const requireOnlinePlatform = (data: unknown): OnlinePlatform => {
+  const platform = (data as { platform?: unknown })?.platform;
+  if (platform === 'ios' || platform === 'android' || platform === 'web') return platform;
+  return 'web';
+};
+
 const assertOnlineVendorEligibility = (
   userExists: boolean,
   userData: admin.firestore.DocumentData,
@@ -192,15 +217,44 @@ const assertOnlineVendorEligibility = (
     throw new HttpsError('failed-precondition', 'Online vendor access is not enabled');
   }
 
-  const discountCode = typeof configData.discountCode === 'string' ? configData.discountCode.trim() : '';
-  if (!discountCode) {
+  const fulfillmentMode = parseOnlineFulfillmentMode(configData.fulfillmentMode);
+  const discountCode = parseOptionalText(configData.discountCode, 160);
+  const purchaseUrl = parseOptionalHttpsUrl(configData.purchaseUrl);
+  const iosUrl = parseOptionalHttpsUrl(configData.iosUrl);
+  const androidUrl = parseOptionalHttpsUrl(configData.androidUrl);
+  if (fulfillmentMode === 'coupon' && (!discountCode || !purchaseUrl)) {
     throw new HttpsError('failed-precondition', 'Online vendor discount code is not configured');
+  }
+  if (fulfillmentMode !== 'coupon' && !purchaseUrl && !iosUrl && !androidUrl) {
+    throw new HttpsError('failed-precondition', 'Online vendor destination is not configured');
   }
 
   return {
+    fulfillmentMode,
     discountCode,
-    purchaseUrl: parseHttpsPurchaseUrl(configData.purchaseUrl),
+    purchaseUrl,
+    iosUrl,
+    androidUrl,
+    ctaLabel: parseOptionalText(configData.ctaLabel, 80),
+    ctaLabelAr: parseOptionalText(configData.ctaLabelAr, 80),
+    instructions: parseOptionalText(configData.instructions),
+    instructionsAr: parseOptionalText(configData.instructionsAr),
   };
+};
+
+const getOnlineDestinationUrl = (
+  offer: ReturnType<typeof assertOnlineVendorEligibility>,
+  platform: OnlinePlatform
+) => {
+  const destination = platform === 'ios'
+    ? offer.iosUrl || offer.purchaseUrl
+    : platform === 'android'
+      ? offer.androidUrl || offer.purchaseUrl
+      : offer.purchaseUrl;
+  if (!destination) {
+    throw new HttpsError('failed-precondition', 'Online vendor destination is not configured for this platform');
+  }
+  return destination;
 };
 
 const getEligibleOnlineVendor = async (uid: string, vendorId: string) => {
@@ -228,7 +282,7 @@ const getEligibleOnlineVendor = async (uid: string, vendorId: string) => {
   };
 };
 
-const recordOnlineVendorClick = async (uid: string, vendorId: string, requestId: string) => {
+const recordOnlineVendorClick = async (uid: string, vendorId: string, requestId: string, platform: OnlinePlatform) => {
   const userRef = db.collection('students').doc(uid);
   const vendorRef = db.collection('vendors').doc(vendorId);
   const configRef = db.collection('vendorOnlineRedemptionConfigs').doc(vendorId);
@@ -263,10 +317,12 @@ const recordOnlineVendorClick = async (uid: string, vendorId: string, requestId:
       configData
     );
 
+    const destinationUrl = getOnlineDestinationUrl(offer, platform);
+
     if (requestDoc.exists) {
       const original = requestDoc.data() || {};
       return {
-        purchaseUrl: typeof original.purchaseUrl === 'string' ? original.purchaseUrl : offer.purchaseUrl,
+        purchaseUrl: typeof original.purchaseUrl === 'string' ? original.purchaseUrl : destinationUrl,
         tracked: original.tracked === true,
       };
     }
@@ -277,7 +333,8 @@ const recordOnlineVendorClick = async (uid: string, vendorId: string, requestId:
     tx.create(requestRef, {
       uid,
       vendorId,
-      purchaseUrl: offer.purchaseUrl,
+      purchaseUrl: destinationUrl,
+      fulfillmentMode: offer.fulfillmentMode,
       tracked,
       createdAt: now,
       expiresAt: admin.firestore.Timestamp.fromMillis(now.toMillis() + ONLINE_CLICK_REQUEST_TTL_MS),
@@ -308,7 +365,7 @@ const recordOnlineVendorClick = async (uid: string, vendorId: string, requestId:
       }, { merge: true });
     }
 
-    return { purchaseUrl: offer.purchaseUrl, tracked };
+    return { purchaseUrl: destinationUrl, tracked };
   });
 };
 
@@ -793,9 +850,8 @@ export const getOnlineVendorOffer = onCall(
     }
 
     const vendorId = requireOnlineVendorId(request.data);
-    const { discountCode } = await getEligibleOnlineVendor(request.auth.uid, vendorId);
-
-    return { discountCode };
+    const offer = await getEligibleOnlineVendor(request.auth.uid, vendorId);
+    return offer;
   }
 );
 
@@ -808,7 +864,8 @@ export const recordOnlineVendorOutboundClick = onCall(
 
     const vendorId = requireOnlineVendorId(request.data);
     const requestId = requireOnlineClickRequestId(request.data);
-    return recordOnlineVendorClick(request.auth.uid, vendorId, requestId);
+    const platform = requireOnlinePlatform(request.data);
+    return recordOnlineVendorClick(request.auth.uid, vendorId, requestId, platform);
   }
 );
 
@@ -819,9 +876,9 @@ export const getOnlineRedemptionPreview = onCall(
   async (request: CallableRequest) => {
     if (!request.auth) throw new HttpsError('unauthenticated', 'Login required');
     const vendorId = requireOnlineVendorId(request.data);
-    const { discountCode } = await getEligibleOnlineVendor(request.auth.uid, vendorId);
+    const offer = await getEligibleOnlineVendor(request.auth.uid, vendorId);
     return {
-      discountCode,
+      ...offer,
       dailyLimitPerUser: LEGACY_UNLIMITED_REMAINING,
       remainingToday: LEGACY_UNLIMITED_REMAINING,
       dateKey: getQatarDateKey(),
@@ -834,11 +891,11 @@ export const redeemOnlineVendor = onCall(
   async (request: CallableRequest) => {
     if (!request.auth) throw new HttpsError('unauthenticated', 'Login required');
     const vendorId = requireOnlineVendorId(request.data);
-    const click = await recordOnlineVendorClick(request.auth.uid, vendorId, randomUUID());
-    const { discountCode } = await getEligibleOnlineVendor(request.auth.uid, vendorId);
+    const click = await recordOnlineVendorClick(request.auth.uid, vendorId, randomUUID(), 'web');
+    const offer = await getEligibleOnlineVendor(request.auth.uid, vendorId);
     return {
       ...click,
-      discountCode,
+      ...offer,
       remainingToday: LEGACY_UNLIMITED_REMAINING,
     };
   }
