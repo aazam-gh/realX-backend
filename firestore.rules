@@ -22,6 +22,36 @@ function isValidOwnerProfileUpdate() {
   && request.resource.data.updatedAt is timestamp;
 }
 
+function isValidVendorDashboardTheme() {
+  return request.resource.data.keys().hasOnly([
+    'primaryColor',
+    'accentColor',
+    'backgroundColor',
+    'cardColor',
+    'chartColor',
+    'updatedAt'
+  ])
+  && request.resource.data.keys().hasAll([
+    'primaryColor',
+    'accentColor',
+    'backgroundColor',
+    'cardColor',
+    'chartColor',
+    'updatedAt'
+  ])
+  && request.resource.data.primaryColor is string
+  && request.resource.data.primaryColor.matches('^#[0-9A-Fa-f]{6}$')
+  && request.resource.data.accentColor is string
+  && request.resource.data.accentColor.matches('^#[0-9A-Fa-f]{6}$')
+  && request.resource.data.backgroundColor is string
+  && request.resource.data.backgroundColor.matches('^#[0-9A-Fa-f]{6}$')
+  && request.resource.data.cardColor is string
+  && request.resource.data.cardColor.matches('^#[0-9A-Fa-f]{6}$')
+  && request.resource.data.chartColor is string
+  && request.resource.data.chartColor.matches('^#[0-9A-Fa-f]{6}$')
+  && request.resource.data.updatedAt is timestamp;
+}
+
 function isValidSavedOffer() {
   return request.resource.data.keys().hasOnly([
       'type',
@@ -93,23 +123,11 @@ function isValidSavedMapPlace() {
 
 function isValidSavedOpportunity() {
   return request.resource.data.keys().hasOnly([
-      'type',
-      'opportunityId',
-      'kind',
-      'titleEn',
-      'titleAr',
-      'providerName',
-      'imageUrl',
-      'deadline',
-      'createdAt',
-      'updatedAt'
+      'type', 'opportunityId', 'kind', 'titleEn', 'titleAr',
+      'providerName', 'imageUrl', 'deadline', 'createdAt', 'updatedAt'
     ])
     && request.resource.data.keys().hasAll([
-      'type',
-      'opportunityId',
-      'kind',
-      'createdAt',
-      'updatedAt'
+      'type', 'opportunityId', 'kind', 'createdAt', 'updatedAt'
     ])
     && request.resource.data.type == 'opportunity'
     && request.resource.data.opportunityId is string
@@ -189,7 +207,6 @@ match /events/{eventId} {
   allow write: if isAdmin();
 }
 
-// ─── student-life opportunities ──────────────────────────────────────
 match /opportunities/{opportunityId} {
   allow read: if isAdmin() || resource.data.status == 'published';
   allow write: if isAdmin();
@@ -206,7 +223,6 @@ match /opportunityActionRequests/{requestId} {
 match /opportunityAnalytics/{opportunityId} {
   allow read: if isAdmin();
   allow write: if false;
-
   match /{document=**} {
     allow read: if isAdmin();
     allow write: if false;
@@ -232,6 +248,29 @@ match /rewardCatalog/{rewardId} {
 // ─── vendors collection ───────────────────────────────────────────────
 match /vendors/{vendorId} {
   allow read: if true;
+  allow write: if isAdmin();
+}
+
+// ─── vendor dashboard customization ──────────────────────────────────
+match /vendorDashboardThemes/{vendorId} {
+  allow read: if request.auth != null
+    && (request.auth.uid == vendorId || isAdmin());
+
+  allow create, update: if request.auth != null
+    && ((request.auth.uid == vendorId && isValidVendorDashboardTheme()) || isAdmin());
+
+  allow delete: if request.auth != null
+    && (request.auth.uid == vendorId || isAdmin());
+}
+
+// ─── holding groups ──────────────────────────────────────────────────
+match /holdingGroups/{groupId} {
+  allow read, write: if isAdmin();
+}
+
+match /holdingGroupUsers/{userId} {
+  allow read: if request.auth != null
+    && (request.auth.uid == userId || isAdmin());
   allow write: if isAdmin();
 }
 
@@ -272,15 +311,38 @@ match /redemption_rate_limits/{rateLimitId} {
   allow read, write: if false;
 }
 
+// ─── Badrgo pilot campaign ───────────────────────────────────────────
+match /pilotCampaigns/{campaignId} {
+  allow read, write: if isAdmin();
+
+  match /codes/{codeId} {
+    allow read, write: if isAdmin();
+  }
+
+  match /claims/{userId} {
+    allow read: if request.auth != null
+      && (request.auth.uid == userId || isAdmin());
+    allow write: if false;
+  }
+}
+
+match /pilotCampaignIdentityClaims/{identityId} {
+  allow read, write: if false;
+}
+
+match /pilotCampaignNotificationDeliveries/{deliveryId} {
+  allow read, write: if false;
+}
+
 // ─── maps collection ──────────────────────────────────────────────────
 match /maps/{mapDocId} {
-  allow read: if true;
+  allow read: if request.auth != null;
   allow write: if isAdmin();
 }
 
 // ─── map locations collection ────────────────────────────────────────
 match /mapLocations/{locationId} {
-  allow read: if true;
+  allow read: if request.auth != null;
   allow write: if isAdmin();
 }
 

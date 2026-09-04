@@ -23,6 +23,7 @@ import "./global-options.js";
 import {createHoldingFunctions} from "./holding.js";
 import {createNotificationFunctions} from "./notifications.js";
 import {createOpportunityFunctions} from "./opportunities.js";
+import {createPilotCampaignFunctions} from "./pilotCampaign.js";
 
 // Init Admin SDK once; the backend also imports mobile-owned functions.
 if (getApps().length === 0) initializeApp();
@@ -72,6 +73,15 @@ const {
   listHoldingTransactions,
   updateHoldingGroup,
 } = createHoldingFunctions(getFirestore(), getAuth());
+const {
+  assignBadrgoReservedCoupon,
+  claimBadrgoPilotCoupon,
+  configureBadrgoPilotCampaign,
+  getBadrgoPilotAdminSummary,
+  getBadrgoPilotCampaign,
+  sendBadrgoPilotClaimedNotification,
+  setBadrgoPilotCampaignStatus,
+} = createPilotCampaignFunctions(getFirestore());
 export {
   createHoldingGroup,
   createHoldingGroupUser,
@@ -90,6 +100,13 @@ export {
   sendNotification,
   unregisterPushToken,
   updateHoldingGroup,
+  assignBadrgoReservedCoupon,
+  claimBadrgoPilotCoupon,
+  configureBadrgoPilotCampaign,
+  getBadrgoPilotAdminSummary,
+  getBadrgoPilotCampaign,
+  sendBadrgoPilotClaimedNotification,
+  setBadrgoPilotCampaignStatus,
 };
 
 export const listAdminBigQueryTransactions = onCall(
