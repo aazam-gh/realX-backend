@@ -452,6 +452,44 @@
       "density": "SPARSE_ALL"
     },
     {
+      "collectionGroup": "voucherCodes",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "importedAt",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ],
+      "density": "SPARSE_ALL"
+    },
+    {
+      "collectionGroup": "claims",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "userId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "claimedAt",
+          "order": "DESCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "DESCENDING"
+        }
+      ],
+      "density": "SPARSE_ALL"
+    },
+    {
       "collectionGroup": "verification_requests",
       "queryScope": "COLLECTION",
       "fields": [
@@ -529,6 +567,11 @@
     }
   ],
   "fieldOverrides": [
+    {
+      "collectionGroup": "voucherCodes",
+      "fieldPath": "code",
+      "indexes": []
+    },
     {
       "collectionGroup": "opportunityActionRequests",
       "fieldPath": "expiresAt",

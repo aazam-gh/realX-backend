@@ -334,6 +334,17 @@ match /pilotCampaignNotificationDeliveries/{deliveryId} {
   allow read, write: if false;
 }
 
+// Badrgo's ongoing voucher inventory is server-only. Admin operations also go
+// through audited callable functions so raw codes cannot be enumerated by a
+// browser session with an admin claim.
+match /voucherPrograms/{programId} {
+  allow read, write: if false;
+
+  match /{document=**} {
+    allow read, write: if false;
+  }
+}
+
 // ─── maps collection ──────────────────────────────────────────────────
 match /maps/{mapDocId} {
   allow read: if request.auth != null;

@@ -24,6 +24,7 @@ import {createHoldingFunctions} from "./holding.js";
 import {createNotificationFunctions} from "./notifications.js";
 import {createOpportunityFunctions} from "./opportunities.js";
 import {createPilotCampaignFunctions} from "./pilotCampaign.js";
+import {createBadrgoVoucherFunctions} from "./badrgoVouchers.js";
 
 // Init Admin SDK once; the backend also imports mobile-owned functions.
 if (getApps().length === 0) initializeApp();
@@ -82,6 +83,17 @@ const {
   sendBadrgoPilotClaimedNotification,
   setBadrgoPilotCampaignStatus,
 } = createPilotCampaignFunctions(getFirestore());
+const {
+  claimBadrgoVoucher,
+  getBadrgoVoucherAdminSummary,
+  getBadrgoVoucherProgram,
+  importBadrgoVoucherCodes,
+  importBadrgoVoucherRedemptions,
+  migrateBadrgoPilotToVoucherProgram,
+  sendBadrgoVoucherClaimedNotification,
+  setBadrgoVoucherProgramStatus,
+  updateBadrgoVoucherProgram,
+} = createBadrgoVoucherFunctions(getFirestore());
 export {
   createHoldingGroup,
   createHoldingGroupUser,
@@ -107,6 +119,15 @@ export {
   getBadrgoPilotCampaign,
   sendBadrgoPilotClaimedNotification,
   setBadrgoPilotCampaignStatus,
+  claimBadrgoVoucher,
+  getBadrgoVoucherAdminSummary,
+  getBadrgoVoucherProgram,
+  importBadrgoVoucherCodes,
+  importBadrgoVoucherRedemptions,
+  migrateBadrgoPilotToVoucherProgram,
+  sendBadrgoVoucherClaimedNotification,
+  setBadrgoVoucherProgramStatus,
+  updateBadrgoVoucherProgram,
 };
 
 export const listAdminBigQueryTransactions = onCall(

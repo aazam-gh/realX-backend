@@ -38,3 +38,7 @@ execFileSync(
   ["deploy", "--only", scope, "--project", project],
   {stdio: "inherit"},
 );
+
+if (scope === "functions") {
+  execFileSync("npm", ["run", "verify:functions"], {stdio: "inherit"});
+}
