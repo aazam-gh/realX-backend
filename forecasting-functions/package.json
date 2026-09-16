@@ -1,0 +1,23 @@
+{
+  "name": "realx-forecasting-functions",
+  "private": true,
+  "main": "lib/index.js",
+  "engines": { "node": "20" },
+  "scripts": {
+    "build": "tsc",
+    "lint": "eslint --ext .ts src",
+    "test": "npm run build && node --test lib/*.test.js"
+  },
+  "dependencies": {
+    "@google-cloud/bigquery": "^8.3.1",
+    "firebase-admin": "^13.6.0",
+    "firebase-functions": "^7.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "eslint": "^9.0.0",
+    "typescript": "^5.7.0"
+  }
+}

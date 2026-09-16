@@ -1,0 +1,12 @@
+{
+  "functions": {
+    "source": "forecasting-functions",
+    "codebase": "forecasting",
+    "ignore": ["node_modules", ".git", "*.log"],
+    "predeploy": [
+      "npm --prefix forecasting-functions run lint",
+      "npm --prefix forecasting-functions run build",
+      "npm --prefix forecasting-functions test"
+    ]
+  }
+}
