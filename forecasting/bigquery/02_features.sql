@@ -1,14 +1,31 @@
 CREATE OR REPLACE TABLE `realx-forecasting-dev.forecasting.fact_daily_vendor_offer` AS
-SELECT
-  DATE(created_at, 'Asia/Qatar') AS demand_date,
-  vendor_id,
-  offer_id,
-  COUNT(*) AS redemptions,
-  SUM(transaction_value) AS transaction_value,
-  SUM(discount_amount) AS discount_amount,
-  SUM(cashback_amount) AS cashback_amount
-FROM `realx-forecasting-dev.forecasting.stg_transactions`
-GROUP BY demand_date, vendor_id, offer_id;
+WITH bounds AS (
+  SELECT MIN(DATE(created_at, 'Asia/Qatar')) AS first_date,
+    MAX(DATE(created_at, 'Asia/Qatar')) AS last_date
+  FROM `realx-forecasting-dev.forecasting.stg_transactions`
+),
+combos AS (
+  SELECT DISTINCT vendor_id, offer_id
+  FROM `realx-forecasting-dev.forecasting.stg_transactions`
+),
+dates AS (
+  SELECT demand_date
+  FROM bounds, UNNEST(GENERATE_DATE_ARRAY(first_date, last_date)) AS demand_date
+),
+observed AS (
+  SELECT DATE(created_at, 'Asia/Qatar') AS demand_date, vendor_id, offer_id,
+    COUNT(*) AS redemptions, SUM(final_amount) AS transaction_value,
+    SUM(discount_amount) AS discount_amount, SUM(cashback_amount) AS cashback_amount
+  FROM `realx-forecasting-dev.forecasting.stg_transactions`
+  GROUP BY demand_date, vendor_id, offer_id
+)
+SELECT d.demand_date, c.vendor_id, c.offer_id,
+  COALESCE(o.redemptions, 0) AS redemptions,
+  COALESCE(o.transaction_value, 0) AS transaction_value,
+  COALESCE(o.discount_amount, 0) AS discount_amount,
+  COALESCE(o.cashback_amount, 0) AS cashback_amount
+FROM dates d CROSS JOIN combos c
+LEFT JOIN observed o USING (demand_date, vendor_id, offer_id);
 
 CREATE OR REPLACE TABLE `realx-forecasting-dev.forecasting.forecast_features` AS
 WITH daily AS (

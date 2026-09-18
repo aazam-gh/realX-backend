@@ -8,5 +8,8 @@
     "deploy:prod": "node scripts/deploy-production.mjs",
     "dry-run:prod": "firebase deploy --dry-run --project reelx-backend",
     "deploy:forecasting": "node scripts/deploy-forecasting.mjs"
+    ,"generate:synthetic-forecasting": "node forecasting/generate-synthetic.mjs"
+    ,"load:synthetic-forecasting": "node scripts/load-synthetic-forecasting-data.mjs"
+    ,"run:synthetic-forecasting": "node scripts/run-synthetic-forecasting-pipeline.mjs"
   }
 }
