@@ -30,6 +30,18 @@ npm run run:synthetic-forecasting
 
 The loader refuses production and regular development Firebase projects.
 
+Phase 2 adds the synthetic engagement and vendor-GMV system:
+
+```sh
+npm run run:phase2-marketplace
+```
+
+It creates the isolated `marketplace` dataset, bronze event/transaction tables,
+vendor daily marts, vendor-performance features, linear/Ridge models, holdout
+metrics, rolling baseline backtests, and opportunity rankings. Boosted-tree
+training is available separately in `12b_phase2_xgb_optional.sql` because it
+can be substantially slower and more expensive in BigQuery ML.
+
 Deploy the isolated callable with:
 
 ```sh

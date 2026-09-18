@@ -11,5 +11,7 @@
     ,"generate:synthetic-forecasting": "node forecasting/generate-synthetic.mjs"
     ,"load:synthetic-forecasting": "node scripts/load-synthetic-forecasting-data.mjs"
     ,"run:synthetic-forecasting": "node scripts/run-synthetic-forecasting-pipeline.mjs"
+    ,"generate:synthetic-marketplace": "node forecasting/generate-synthetic-marketplace.mjs"
+    ,"run:phase2-marketplace": "node scripts/run-phase2-marketplace-pipeline.mjs"
   }
 }

@@ -7,6 +7,7 @@ setGlobalOptions({region: "me-central1", maxInstances: 5});
 const PROJECT_ID = process.env.GCLOUD_PROJECT || "realx-forecasting-dev";
 const DATASET = process.env.FORECASTING_DATASET || "forecasting";
 const TABLE = `${PROJECT_ID}.${DATASET}.forecasts`;
+const OPPORTUNITY_TABLE = `${PROJECT_ID}.marketplace.opportunity_rankings`;
 const bigquery = new BigQuery({projectId: PROJECT_ID});
 
 export type ForecastRow = {
@@ -39,6 +40,15 @@ export type ForecastDashboard = {
     confidence: ForecastRow["confidence"];
   }>;
   status: "ready" | "empty" | "stale";
+  opportunities: Array<{
+    rank: number;
+    vendorId: string;
+    predictionDate: string;
+    predictedGmv: number;
+    currentGmv: number;
+    momentum: number;
+    modelVersion: string;
+  }>;
 };
 
 function isAdmin(request: {auth?: {token?: Record<string, unknown>} | null}) {
@@ -88,12 +98,34 @@ export const getForecastDashboard = onCall(async (request): Promise<ForecastDash
     }));
     const generatedAt = rows[0]?.generated_at || null;
     const stale = generatedAt ? Date.now() - Date.parse(generatedAt) > 48 * 60 * 60 * 1000 : false;
+    let opportunities: ForecastDashboard["opportunities"] = [];
+    try {
+      const [opportunityJob] = await bigquery.createQueryJob({
+        query: `SELECT rank, vendor_id, prediction_date, predicted_gmv_next_30d, gmv_30d, gmv_momentum, model_version FROM \`${OPPORTUNITY_TABLE}\` ORDER BY rank LIMIT 50`,
+        maximumBytesBilled: String(process.env.FORECASTING_MAX_BYTES_BILLED || 100000000),
+        location: "US",
+        useLegacySql: false,
+      });
+      const [opportunityRows] = await opportunityJob.getQueryResults() as [Array<Record<string, unknown>>];
+      opportunities = opportunityRows.map((row) => ({
+        rank: numberValue(row.rank),
+        vendorId: String(row.vendor_id || ""),
+        predictionDate: String(row.prediction_date || ""),
+        predictedGmv: numberValue(row.predicted_gmv_next_30d),
+        currentGmv: numberValue(row.gmv_30d),
+        momentum: numberValue(row.gmv_momentum),
+        modelVersion: String(row.model_version || "unknown"),
+      }));
+    } catch (error) {
+      console.error("Opportunity ranking query failed", error);
+    }
     return {
       generatedAt,
       horizonDays,
       modelVersion: rows[0]?.model_version || null,
       forecasts,
       status: forecasts.length === 0 ? "empty" : stale ? "stale" : "ready",
+      opportunities,
     };
   } catch (error) {
     console.error("Forecast query failed", error);
