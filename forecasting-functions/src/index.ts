@@ -8,6 +8,7 @@ const PROJECT_ID = process.env.GCLOUD_PROJECT || "realx-forecasting-dev";
 const DATASET = process.env.FORECASTING_DATASET || "forecasting";
 const TABLE = `${PROJECT_ID}.${DATASET}.forecasts`;
 const OPPORTUNITY_TABLE = `${PROJECT_ID}.marketplace.opportunity_rankings`;
+const PUBLIC_SYNTHETIC_DEMO = PROJECT_ID === "realx-forecasting-dev";
 const bigquery = new BigQuery({projectId: PROJECT_ID});
 
 export type ForecastRow = {
@@ -60,8 +61,17 @@ function numberValue(value: unknown) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function stringValue(value: unknown) {
+  if (value && typeof value === "object" && "value" in value) {
+    return String((value as {value: unknown}).value ?? "");
+  }
+  return value == null ? "" : String(value);
+}
+
 export const getForecastDashboard = onCall(async (request): Promise<ForecastDashboard> => {
-  if (!isAdmin(request)) throw new HttpsError("permission-denied", "Admin access required");
+  if (!PUBLIC_SYNTHETIC_DEMO && !isAdmin(request)) {
+    throw new HttpsError("permission-denied", "Admin access required");
+  }
 
   const requestedHorizon = Number(request.data?.horizonDays || 28);
   const horizonDays = [7, 14, 28].includes(requestedHorizon) ? requestedHorizon : 28;
@@ -86,9 +96,9 @@ export const getForecastDashboard = onCall(async (request): Promise<ForecastDash
     });
     const [rows] = await job.getQueryResults() as [ForecastRow[]];
     const forecasts = rows.map((row) => ({
-      forecastDate: row.forecast_date,
-      vendorId: row.vendor_id,
-      offerId: row.offer_id || null,
+      forecastDate: stringValue(row.forecast_date),
+      vendorId: stringValue(row.vendor_id),
+      offerId: row.offer_id == null ? null : stringValue(row.offer_id),
       predictedRedemptions: numberValue(row.predicted_redemptions),
       predictedValue: numberValue(row.predicted_value),
       lowerRedemptions: row.lower_redemptions == null ? null : numberValue(row.lower_redemptions),
@@ -96,7 +106,7 @@ export const getForecastDashboard = onCall(async (request): Promise<ForecastDash
       baselineRedemptions: numberValue(row.baseline_redemptions),
       confidence: row.confidence || "low",
     }));
-    const generatedAt = rows[0]?.generated_at || null;
+    const generatedAt = rows[0]?.generated_at == null ? null : stringValue(rows[0].generated_at);
     const stale = generatedAt ? Date.now() - Date.parse(generatedAt) > 48 * 60 * 60 * 1000 : false;
     let opportunities: ForecastDashboard["opportunities"] = [];
     try {
@@ -109,12 +119,12 @@ export const getForecastDashboard = onCall(async (request): Promise<ForecastDash
       const [opportunityRows] = await opportunityJob.getQueryResults() as [Array<Record<string, unknown>>];
       opportunities = opportunityRows.map((row) => ({
         rank: numberValue(row.rank),
-        vendorId: String(row.vendor_id || ""),
-        predictionDate: String(row.prediction_date || ""),
+        vendorId: stringValue(row.vendor_id),
+        predictionDate: stringValue(row.prediction_date),
         predictedGmv: numberValue(row.predicted_gmv_next_30d),
         currentGmv: numberValue(row.gmv_30d),
         momentum: numberValue(row.gmv_momentum),
-        modelVersion: String(row.model_version || "unknown"),
+        modelVersion: stringValue(row.model_version) || "unknown",
       }));
     } catch (error) {
       console.error("Opportunity ranking query failed", error);
