@@ -1,5 +1,7 @@
 functions/lib/
 forecasting-functions/lib/
+forecasting-functions/node_modules/
+forecasting-functions/package-lock.json
 forecasting/data/
 functions/node_modules/
 firebase-debug.log
