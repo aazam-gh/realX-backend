@@ -1,5 +1,5 @@
 import {execFileSync} from "node:child_process";
-import {existsSync} from "node:fs";
+import {existsSync, readFileSync} from "node:fs";
 
 const project = process.env.FORECASTING_PROJECT_ID || "realx-forecasting-dev";
 if (project === "reelx-backend" || project === "realx-dev" || project === "realx-dev-107") {
@@ -15,5 +15,8 @@ for (const file of [
   "forecasting/bigquery/03_forecast_table.sql",
   "forecasting/bigquery/05_publish_seasonal_naive.sql",
 ]) {
-  execFileSync("bq", ["query", `--project_id=${project}`, "--location=US", "--use_legacy_sql=false", `<${file}`], {stdio: "inherit", shell: true});
+  execFileSync("bq", ["query", `--project_id=${project}`, "--location=US", "--use_legacy_sql=false"], {
+    input: readFileSync(file),
+    stdio: ["pipe", "inherit", "inherit"],
+  });
 }
